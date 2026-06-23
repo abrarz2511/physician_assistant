@@ -9,6 +9,7 @@ A FastAPI backend for receiving streamed audio from a client, transcribing it wi
 - Groq Whisper transcription using `whisper-large-v3`
 - Live transcript update messages over the websocket
 - Final transcript saved under `transcripts/`
+- Langchain based intelligent chunking and embedding for RAG
 
 ## Setup
 
@@ -45,3 +46,17 @@ Future versions will add:
 - A RAG-based insurance code compliance feature
 - An LLM-based patient summarization feature
 - A Vue.js frontend for recording audio, viewing live transcripts, and managing patient notes
+
+## Compliance RAG ingestion
+
+Install the ingestion dependencies and build deterministic chunks and BM25 indexes:
+
+```bash
+pip install -r requirements-rag.txt
+python -m rag_ingestion.cli --output rag_indexes
+```
+
+To also create embeddings through an OpenAI-compatible embeddings endpoint, set
+`EMBEDDING_API_KEY` (and optionally `EMBEDDING_BASE_URL`) and add `--embed`. Each
+corpus is written separately under `rag_indexes/` with `chunks.jsonl`, `bm25.json`,
+and, when requested, `embeddings.jsonl`.

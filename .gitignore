@@ -1,1 +1,4 @@
 .env
+rag_indexes/
+__pycache__/
+*.py[cod]
