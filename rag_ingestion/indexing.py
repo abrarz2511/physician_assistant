@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from .models import Chunk
 
@@ -62,24 +59,3 @@ def bm25_search(index: dict[str, Any], query: str, limit: int = 10) -> list[tupl
             )
             scores[doc_id] += score
     return [(index["chunk_ids"][doc], score) for doc, score in scores.most_common(limit)]
-
-
-def write_embeddings(
-    chunks: list[Chunk], output: Path, model: str, batch_size: int = 64
-) -> None:
-    endpoint = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1").rstrip("/")
-    api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("Set EMBEDDING_API_KEY or OPENAI_API_KEY to build embeddings")
-    with output.open("w", encoding="utf-8") as handle, httpx.Client(timeout=120) as client:
-        for start in range(0, len(chunks), batch_size):
-            batch = chunks[start : start + batch_size]
-            response = client.post(
-                f"{endpoint}/embeddings",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "input": [chunk.text for chunk in batch]},
-            )
-            response.raise_for_status()
-            vectors = sorted(response.json()["data"], key=lambda item: item["index"])
-            for chunk, vector in zip(batch, vectors, strict=True):
-                handle.write(json.dumps({"chunk_id": chunk.chunk_id, "embedding": vector["embedding"]}) + "\n")

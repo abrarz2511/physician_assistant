@@ -52,11 +52,54 @@ Future versions will add:
 Install the ingestion dependencies and build deterministic chunks and BM25 indexes:
 
 ```bash
-pip install -r requirements-rag.txt
-python -m rag_ingestion.cli --output rag_indexes
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install -r requirements-rag.txt
+.\venv\Scripts\python.exe -m rag_ingestion.cli --output chunks
 ```
 
-To also create embeddings through an OpenAI-compatible embeddings endpoint, set
-`EMBEDDING_API_KEY` (and optionally `EMBEDDING_BASE_URL`) and add `--embed`. Each
-corpus is written separately under `rag_indexes/` with `chunks.jsonl`, `bm25.json`,
-and, when requested, `embeddings.jsonl`.
+Embedding is a separate step that reads the saved `./chunks/*/chunks.jsonl`
+files and uploads normalized `BAAI/bge-small-en-v1.5` embeddings to Qdrant
+Cloud. Add your Qdrant Cloud credentials to `.env`:
+
+```text
+QDRANT_URL=https://your-cluster-url
+QDRANT_API_KEY=your-qdrant-api-key
+```
+
+Create the collection:
+
+```bash
+.\venv\Scripts\python.exe -m rag_ingestion.embed_chunks --collection compliance_chunks --create-only
+```
+
+Upload the saved chunks:
+
+```bash
+.\venv\Scripts\python.exe -m rag_ingestion.embed_chunks --chunks chunks --collection compliance_chunks --batch-size 100
+```
+
+Each corpus is written separately under `chunks/` with `chunks.jsonl` and
+`bm25.json`. The Qdrant collection defaults to `compliance_chunks` and is
+created automatically with cosine distance and 384-dimensional vectors when it
+does not already exist.
+
+## ICD-10-CM hybrid retrieval
+
+The SOAP generator returns a `DiagnosisQueries` array containing documented
+diagnoses and symptoms. Pass those queries and the date of service to the
+standalone retrieval service:
+
+```python
+from rag_ingestion.retrieval import ICDRetriever
+
+retriever = ICDRetriever("chunks")
+result = retriever.search(soap_note["DiagnosisQueries"], "2026-10-01")
+payload = result.to_dict()
+```
+
+The service combines BM25 and Qdrant vector ranks for the Alphabetic Index and
+Tabular List, confirms candidates against exact Tabular leaf codes, and returns
+relevant guideline passages. It only supports the loaded FY2027 code set
+(October 1, 2026 through September 30, 2027). Results are candidates with source
+evidence, not final coding decisions. Retrieval limits and weights can be
+overridden with `RetrievalConfig`.
