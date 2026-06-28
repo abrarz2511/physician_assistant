@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "corpora": {
+    "icd_alphabetic": {
+      "chunk_count": 76455,
+      "embedding_model": null
+    },
+    "icd_tabular": {
+      "chunk_count": 36449,
+      "embedding_model": null
+    },
+    "icd_guidelines": {
+      "chunk_count": 298,
+      "embedding_model": null
+    },
+    "claims_manual_ch12": {
+      "chunk_count": 271,
+      "embedding_model": null
+    },
+    "mln_em_guide": {
+      "chunk_count": 23,
+      "embedding_model": null
+    }
+  }
+}
