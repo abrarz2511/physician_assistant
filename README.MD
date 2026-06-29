@@ -90,7 +90,7 @@ diagnoses and symptoms. Pass those queries and the date of service to the
 standalone retrieval service:
 
 ```python
-from rag_ingestion.retrieval import ICDRetriever
+from retrieval.retrieve_icd import ICDRetriever
 
 retriever = ICDRetriever("chunks")
 result = retriever.search(soap_note["DiagnosisQueries"], "2026-10-01")
@@ -103,3 +103,41 @@ relevant guideline passages. It only supports the loaded FY2027 code set
 (October 1, 2026 through September 30, 2027). Results are candidates with source
 evidence, not final coding decisions. Retrieval limits and weights can be
 overridden with `RetrievalConfig`.
+
+## CMS E/M retrieval
+
+Run the hybrid retrieval channels against the MLN E/M guide and Claims
+Processing Manual Chapter 12 with one setting/patient-type query:
+
+```python
+from retrieval.retrieve_cms import CMSRetriever
+
+retriever = CMSRetriever("chunks")
+context = retriever.search("office outpatient", "established patient")
+payload = context.to_dict()
+```
+
+After a model proposes an E/M service, `validate_proposal()` checks setting and
+patient compatibility plus the documentation signals required for time, MDM,
+modifier 25, G2211, and prolonged services.
+
+## Coding RAG chain
+
+`codes.py` orchestrates both retrieval passes, sends the SOAP note and compact
+source evidence to Groq, validates the model's citations and ICD candidate
+selection, and then runs the deterministic CMS checks:
+
+```python
+from codes import create_code_recommendations
+
+result = create_code_recommendations(
+    soap_note,
+    setting="office outpatient",
+    patient_type="established patient",
+    service_date="2026-10-01",
+    documentation_facts={"total_time_minutes": 35},
+)
+```
+
+Set `GROQ_API_KEY` for the Groq client. `GROQ_CODES_MODEL` optionally overrides
+the default coding model.

@@ -1,4 +1,9 @@
 .env
 rag_indexes/
+venv/
+venv/**
 __pycache__/
 *.py[cod]
+rag_ingestion/search_qdrant.py
+tests/
+tests/**

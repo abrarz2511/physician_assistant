@@ -7,8 +7,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
-from .embedding import DEFAULT_COLLECTION, DEFAULT_EMBEDDING_MODEL
-from .indexing import bm25_search
+from rag_ingestion.embedding import DEFAULT_COLLECTION, DEFAULT_EMBEDDING_MODEL
+from rag_ingestion.indexing import bm25_search
 
 ICD_CORPORA = ("icd_alphabetic", "icd_tabular", "icd_guidelines")
 FY2027_START = date(2026, 10, 1)
