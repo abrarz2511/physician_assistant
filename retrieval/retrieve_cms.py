@@ -63,7 +63,6 @@ class _HybridHit:
 
 
 class CMSRetriever:
-    """Run the CMS E/M retrieval pass described in ``CMS compliance.MD``."""
 
     def __init__(
         self,

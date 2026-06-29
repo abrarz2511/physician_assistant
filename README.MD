@@ -1,93 +1,148 @@
 # Physician Assistant App
 
-A FastAPI backend for receiving streamed audio from a client, transcribing it with Groq Whisper, streaming transcript updates back over a websocket, and saving the final transcript locally as a `.txt` file.
+Backend components for streaming and transcribing encounter audio, generating
+structured SOAP notes, and producing source-grounded ICD-10-CM and CMS E/M
+coding recommendations.
 
-## Current Features
+> This project provides clinical documentation and coding decision support. Its
+> output is not a final diagnosis or coding determination and requires review by
+> a qualified clinician or coder.
 
-- FastAPI websocket endpoint for audio streaming
-- Audio chunk collection into a temporary file
-- Groq Whisper transcription using `whisper-large-v3`
-- Live transcript update messages over the websocket
-- Final transcript saved under `transcripts/`
-- Langchain based intelligent chunking and embedding for RAG
+## Background
 
-## Setup
+Physician's have to go through the tedious task of reporting ICD-10-CM codes for billing, as these codes justify the medical necessity of the bills. Another important but rigorous process is to find and report CMS/CPT service or provider codes, which explain the nature of the service that was provided (level, complexity, time). 
 
-Install dependencies:
+This Physician's assistant was built with a focus on automating these tedious tasks. It listens to the voice notes from the Doctor, transcribes it, generates summary notes in the SOAP format and recommends ICD-10-CM code candidates and specificity requirements and CMS E/M service documentation gaps, service levels and billing codes. It also provides a place where the physician can store his notes.
 
-```bash
-pip install fastapi uvicorn groq
+
+## Project layout
+
+```text
+main.py                    FastAPI application and WebSocket route
+voice_note.py              Audio accumulation, transcription, and transcript saving
+websocket_manager.py       WebSocket connection and audio-message handling
+soap.py                    SOAP-note generation and output validation
+codes.py                   End-to-end retrieval, model call, and grounding checks
+rag_ingestion/             Source parsing, chunking, BM25 indexing, and embedding
+retrieval/                 ICD-10-CM and CMS hybrid retrieval and validation
+chunks/                    Generated chunks and BM25 indexes
+ICD-10/                    FY2027 ICD-10-CM source files
+Doc compliance/            CMS source documents
 ```
 
-Set your Groq API key:
+## Prerequisites
 
-```bash
-$env:GROQ_API_KEY="your_api_key_here"
+- Python 3.10 or newer
+- A Groq API key for transcription, SOAP generation, and coding recommendations
+- A Qdrant Cloud collection for hybrid vector retrieval
+
+## Installation
+
+From PowerShell:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install fastapi uvicorn groq
+.\venv\Scripts\python.exe -m pip install -r requirements-rag.txt
 ```
 
-Run the backend:
+The API-only dependencies and RAG dependencies are currently installed
+separately because there is no single application requirements file.
 
-```bash
-python -m uvicorn main:app --reload
+## Configuration
+
+Set these environment variables before running the relevant workflow:
+
+```powershell
+$env:GROQ_API_KEY="your-groq-api-key"
+$env:QDRANT_URL="https://your-cluster-url"
+$env:QDRANT_API_KEY="your-qdrant-api-key"
 ```
 
-Websocket endpoint:
+Optional model overrides:
+
+```powershell
+$env:GROQ_SOAP_MODEL="llama-3.3-70b-versatile"
+$env:GROQ_CODES_MODEL="llama-3.3-70b-versatile"
+```
+
+The embedding and retrieval modules also load Qdrant credentials from a local
+`.env` file. Never commit API keys; `.env` is ignored by Git.
+
+## Run the API
+
+```powershell
+.\venv\Scripts\python.exe -m uvicorn main:app --reload
+```
+
+Connect to:
 
 ```text
 ws://127.0.0.1:8000/ws/audio/{session_id}
 ```
 
-Send binary audio chunks to the websocket. Send the text message `stop` when the recording is complete.
+The client sends binary WebM audio chunks and finishes the stream by sending
+the text message `stop`. Server messages use these types:
 
-## Roadmap
+- `connection.accepted`
+- `audio.chunk.received`
+- `transcript.update`
+- `transcript.error`
+- `stream.stopped`
+- `stream.error`
+- `transcript.final`
 
-Future versions will add:
+The server retranscribes the accumulated temporary audio after every received
+chunk. On completion it removes the temporary audio and writes the final text
+to `transcripts/{sanitized_session_id}.txt`.
 
-- A RAG-based insurance code compliance feature
-- An LLM-based patient summarization feature
-- A Vue.js frontend for recording audio, viewing live transcripts, and managing patient notes
 
-## Compliance RAG ingestion
+## Build the RAG corpora
 
-Install the ingestion dependencies and build deterministic chunks and BM25 indexes:
+The ingestion command parses the repository's FY2027 ICD-10-CM XML/PDF files
+and CMS PDFs:
 
-```bash
-python -m venv venv
-.\venv\Scripts\python.exe -m pip install -r requirements-rag.txt
+```powershell
 .\venv\Scripts\python.exe -m rag_ingestion.cli --output chunks
 ```
 
-Embedding is a separate step that reads the saved `./chunks/*/chunks.jsonl`
-files and uploads normalized `BAAI/bge-small-en-v1.5` embeddings to Qdrant
-Cloud. Add your Qdrant Cloud credentials to `.env`:
+Five corpora are created under `chunks/`:
 
-```text
-QDRANT_URL=https://your-cluster-url
-QDRANT_API_KEY=your-qdrant-api-key
-```
+- `icd_alphabetic`
+- `icd_tabular`
+- `icd_guidelines`
+- `claims_manual_ch12`
+- `mln_em_guide`
+
+Each corpus contains `chunks.jsonl` and `bm25.json`; `chunks/manifest.json`
+records the corpus counts. Chunk IDs are deterministic SHA-256 identities based
+on corpus, source version, logical path, code, page range, chunk index, and a
+hash of the normalized chunk text.
+
+## Create and populate the Qdrant collection
+
+The default embedding model is `BAAI/bge-small-en-v1.5`. Embeddings are
+normalized 384-dimensional vectors, and the default Qdrant collection is
+`compliance_chunks` using cosine distance.
 
 Create the collection:
 
-```bash
+```powershell
 .\venv\Scripts\python.exe -m rag_ingestion.embed_chunks --collection compliance_chunks --create-only
 ```
 
-Upload the saved chunks:
+Embed and upload all saved chunks:
 
-```bash
+```powershell
 .\venv\Scripts\python.exe -m rag_ingestion.embed_chunks --chunks chunks --collection compliance_chunks --batch-size 100
 ```
 
-Each corpus is written separately under `chunks/` with `chunks.jsonl` and
-`bm25.json`. The Qdrant collection defaults to `compliance_chunks` and is
-created automatically with cosine distance and 384-dimensional vectors when it
-does not already exist.
+Use `--device cpu` or `--device cuda` to select a sentence-transformers device
+when necessary. The collection, model, vector size, batch size, URL, and API key
+can also be overridden through CLI options.
 
 ## ICD-10-CM hybrid retrieval
-
-The SOAP generator returns a `DiagnosisQueries` array containing documented
-diagnoses and symptoms. Pass those queries and the date of service to the
-standalone retrieval service:
 
 ```python
 from retrieval.retrieve_icd import ICDRetriever
@@ -97,47 +152,47 @@ result = retriever.search(soap_note["DiagnosisQueries"], "2026-10-01")
 payload = result.to_dict()
 ```
 
-The service combines BM25 and Qdrant vector ranks for the Alphabetic Index and
-Tabular List, confirms candidates against exact Tabular leaf codes, and returns
-relevant guideline passages. It only supports the loaded FY2027 code set
-(October 1, 2026 through September 30, 2027). Results are candidates with source
-evidence, not final coding decisions. Retrieval limits and weights can be
-overridden with `RetrievalConfig`.
+The retriever fuses BM25 and Qdrant ranks, follows one-hop Alphabetic Index
+cross-references, and accepts only candidate codes confirmed as exact Tabular
+leaf codes. The loaded FY2027 data supports service dates from October 1, 2026
+through September 30, 2027. Dates outside that interval raise `ValueError`.
 
-## CMS E/M retrieval
-
-Run the hybrid retrieval channels against the MLN E/M guide and Claims
-Processing Manual Chapter 12 with one setting/patient-type query:
+## CMS E/M retrieval and validation
 
 ```python
 from retrieval.retrieve_cms import CMSRetriever
 
 retriever = CMSRetriever("chunks")
 context = retriever.search("office outpatient", "established patient")
-payload = context.to_dict()
-```
 
-After a model proposes an E/M service, `validate_proposal()` checks setting and
-patient compatibility plus the documentation signals required for time, MDM,
-modifier 25, G2211, and prolonged services.
-
-## Coding RAG chain
-
-`codes.py` orchestrates both retrieval passes, sends the SOAP note and compact
-source evidence to Groq, validates the model's citations and ICD candidate
-selection, and then runs the deterministic CMS checks:
-
-```python
-from codes import create_code_recommendations
-
-result = create_code_recommendations(
-    soap_note,
+validation = retriever.validate_proposal(
+    proposal,
+    {"total_time_minutes": 35},
     setting="office outpatient",
     patient_type="established patient",
-    service_date="2026-10-01",
-    documentation_facts={"total_time_minutes": 35},
 )
 ```
 
-Set `GROQ_API_KEY` for the Groq client. `GROQ_CODES_MODEL` optionally overrides
-the default coding model.
+Validation conservatively checks the E/M service family, time or MDM
+documentation, modifier 25, G2211, and prolonged-service thresholds.
+
+## End-to-end coding chain
+
+The chain performs ICD and CMS retrieval, sends compact source evidence to
+Groq, rejects ICD selections outside the retrieved candidates, rejects unknown
+evidence chunk IDs, and runs deterministic CMS validation. The return value
+contains `recommendation`, `cms_validation`, and the full `retrieval` payload.
+
+For detailed retrieval flow diagrams, see
+[`retrieval/RETRIEVE.MD`](retrieval/RETRIEVE.MD).
+
+## Known limitations
+
+- The current API exposes audio streaming only; the SOAP and coding components
+  must be called from Python.
+- Audio is retranscribed in full for every chunk, so cost and latency increase
+  with recording length.
+- Only the bundled FY2027 ICD-10-CM date range is accepted.
+- Hybrid retrieval requires both local generated indexes and the corresponding
+  embeddings in Qdrant.
+- No automated test suite is currently tracked in this repository.
