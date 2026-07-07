@@ -35,6 +35,7 @@ Doc compliance/            CMS source documents
 - Python 3.10 or newer
 - A Groq API key for transcription, SOAP generation, and coding recommendations
 - A Qdrant Cloud collection for hybrid vector retrieval
+- Docker Desktop, or PostgreSQL 14 or newer, for encounter storage
 
 ## Installation
 
@@ -43,12 +44,53 @@ From PowerShell:
 ```powershell
 python -m venv venv
 .\venv\Scripts\python.exe -m pip install --upgrade pip
-.\venv\Scripts\python.exe -m pip install fastapi uvicorn groq
-.\venv\Scripts\python.exe -m pip install -r requirements-rag.txt
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-The API-only dependencies and RAG dependencies are currently installed
-separately because there is no single application requirements file.
+## Start PostgreSQL with Docker
+
+The included `docker-compose.yml` runs PostgreSQL 17 locally. Start Docker
+Desktop first, then run these commands from the repository root:
+
+```powershell
+docker compose up -d postgres
+docker compose ps postgres
+```
+
+Wait until the status reports `healthy`. The development database is exposed
+on `localhost:5432` with these Compose defaults:
+
+```text
+Database: physician_assistant
+User:     physician_app
+Password: local-development-only
+```
+
+Configure the application connection and apply the schema migration:
+
+```powershell
+$env:DATABASE_URL="postgresql+asyncpg://physician_app:local-development-only@localhost:5432/physician_assistant"
+.\venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Useful Docker commands:
+
+```powershell
+# View PostgreSQL logs
+docker compose logs -f postgres
+
+# Stop the database without deleting its data
+docker compose stop postgres
+
+# Start an existing stopped database
+docker compose start postgres
+
+# Remove the container and network while preserving the named data volume
+docker compose down
+```
+
+To permanently delete the local database data, run `docker compose down -v`.
+Do not use the development password in a deployed environment.
 
 ## Configuration
 
@@ -58,6 +100,7 @@ Set these environment variables before running the relevant workflow:
 $env:GROQ_API_KEY="your-groq-api-key"
 $env:QDRANT_URL="https://your-cluster-url"
 $env:QDRANT_API_KEY="your-qdrant-api-key"
+$env:DATABASE_URL="postgresql+asyncpg://user:password@host:5432/database"
 ```
 
 Optional model overrides:
@@ -94,9 +137,28 @@ the text message `stop`. Server messages use these types:
 - `transcript.final`
 
 The server retranscribes the accumulated temporary audio after every received
-chunk. On completion it removes the temporary audio and writes the final text
-to `transcripts/{sanitized_session_id}.txt`.
+chunk. `connection.accepted` returns a server-generated `encounter_id`. On stop
+or disconnect, the server removes temporary audio and stores the final transcript
+in PostgreSQL.
 
+### Generate a SOAP note
+
+Generate and store a SOAP note for a completed encounter:
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/note" -H "Content-Type: application/json" -d '{"encounter_id":"00000000-0000-0000-0000-000000000000"}'
+```
+
+The response is a validated JSON object containing `Subjective`, `Objective`,
+`Assessment`, `Plan`, and `DiagnosisQueries`. Generate coding recommendations
+with `POST /recommend` using the encounter ID and encounter context. Retrieve
+newest-first summaries with `GET /encounters`, or the transcript and latest
+artifacts with `GET /encounters/{encounter_id}`.
+
+These endpoints do not implement application authentication. Deploy them only
+behind a trusted network boundary. Use a least-privilege database role, TLS in
+transit, and encrypted PostgreSQL storage and backups for clinical data. Do not
+log request or response bodies containing clinical information.
 
 ## Build the RAG corpora
 
@@ -188,8 +250,6 @@ For detailed retrieval flow diagrams, see
 
 ## Known limitations
 
-- The current API exposes audio streaming only; the SOAP and coding components
-  must be called from Python.
 - Audio is retranscribed in full for every chunk, so cost and latency increase
   with recording length.
 - Only the bundled FY2027 ICD-10-CM date range is accepted.

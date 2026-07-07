@@ -17,16 +17,12 @@ class VoiceNote:
     def __init__(
         self,
         session_id: str,
-        output_dir: str | Path = "transcripts",
         audio_suffix: str = ".webm",
     ) -> None:
         self.session_id = session_id
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
         safe_session_id = self._safe_filename(session_id)
-        self.transcript_path = self.output_dir / f"{safe_session_id}.txt"
         self.current_transcript = ""
+        self.transcription_failed = False
 
         audio_file = tempfile.NamedTemporaryFile(
             delete=False,
@@ -57,6 +53,7 @@ class VoiceNote:
             #transcribe the audio 
             transcript = await asyncio.to_thread(self.transcribe, self.audio_path)
         except Exception as exc:
+            self.transcription_failed = True
             await send_update(
                 {
                     "type": "transcript.error",
@@ -82,14 +79,9 @@ class VoiceNote:
         with self.audio_path.open("ab") as audio_file:
             audio_file.write(chunk)
 
-    def save_transcript(self) -> Path:
-        self.transcript_path.write_text(self.current_transcript, encoding="utf-8")
-        return self.transcript_path
-
-    async def finish(self) -> Path:
-        transcript_path = await asyncio.to_thread(self.save_transcript)
+    async def finish(self) -> str:
         await asyncio.to_thread(self._remove_temp_audio)
-        return transcript_path
+        return self.current_transcript
 
     @staticmethod
     def transcribe(filename: str | os.PathLike[str]) -> str:
@@ -116,5 +108,3 @@ class VoiceNote:
 @cache
 def get_groq_client() -> Groq:
     return Groq()
-
-

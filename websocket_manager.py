@@ -19,13 +19,19 @@ class WebSocketManager:
         self.active_connections: dict[str, WebSocket] = {}
         self._chunk_sequences: dict[str, int] = {}
 
-    async def connect(self, session_id: str, websocket: WebSocket) -> None:
+    async def connect(
+        self, session_id: str, websocket: WebSocket, encounter_id: str
+    ) -> None:
         await websocket.accept()
-        self.active_connections[session_id] = websocket
-        self._chunk_sequences[session_id] = 0
+        self.active_connections[encounter_id] = websocket
+        self._chunk_sequences[encounter_id] = 0
         await self.send_json(
-            session_id,
-            {"type": "connection.accepted", "session_id": session_id},
+            encounter_id,
+            {
+                "type": "connection.accepted",
+                "session_id": session_id,
+                "encounter_id": encounter_id,
+            },
         )
 
     def disconnect(self, session_id: str) -> None:

@@ -109,7 +109,7 @@ def create_code_recommendations(
     else:
         icd_retriever = icd_retriever or ICDRetriever(chunks_dir)
         cms_retriever = cms_retriever or CMSRetriever(chunks_dir)
-
+ 
     diagnosis_queries = cast(list[dict[str, Any]], note["DiagnosisQueries"])
     icd_result = icd_retriever.search(diagnosis_queries, service_date)
     cms_result = cms_retriever.search(setting, patient_type)
