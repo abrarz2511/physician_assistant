@@ -7,6 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, cast
 
+from cache import LLMResponseCache, get_llm_cache
 from retrieval.retrieve_cms import CMSRetriever
 from retrieval.retrieve_icd import ICDRetriever, QdrantVectorSearcher
 from voice_note import get_groq_client
@@ -88,6 +89,7 @@ def create_code_recommendations(
     icd_retriever: _ICDRetriever | None = None,
     cms_retriever: _CMSRetriever | None = None,
     groq_client: Any | None = None,
+    llm_cache: LLMResponseCache | None = None,
 ) -> dict[str, Any]:
     """Run both retrieval passes, call Groq, and validate the E/M proposal.
 
@@ -127,21 +129,35 @@ def create_code_recommendations(
         "icd_retrieval": _compact_icd_context(icd_payload),
         "cms_retrieval": _compact_cms_context(cms_payload),
     }
-    completion = (groq_client or get_groq_client()).chat.completions.create(
-        model=model or os.getenv("GROQ_CODES_MODEL", DEFAULT_MODEL),
-        messages=[
+    selected_model = model or os.getenv("GROQ_CODES_MODEL", DEFAULT_MODEL)
+    messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": json.dumps(llm_context, ensure_ascii=True),
             },
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
-    content = completion.choices[0].message.content
+        ]
+    cache_query = {
+        "model": selected_model,
+        "messages": messages,
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    response_cache = llm_cache or get_llm_cache()
+    content = response_cache.get(cache_query)
+    cache_miss = content is None
+    if cache_miss:
+        completion = (groq_client or get_groq_client()).chat.completions.create(
+            model=selected_model,
+            messages=messages,
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        content = completion.choices[0].message.content
     recommendation = _parse_recommendation(content, len(diagnosis_queries))
     _validate_grounding(recommendation, llm_context)
+    if cache_miss:
+        response_cache.set(cache_query, cast(str, content))
 
     validation_documentation = {
         field: note[field] for field in SOAP_FIELDS

@@ -36,6 +36,7 @@ Doc compliance/            CMS source documents
 - A Groq API key for transcription, SOAP generation, and coding recommendations
 - A Qdrant Cloud collection for hybrid vector retrieval
 - Docker Desktop, or PostgreSQL 14 or newer, for encounter storage
+- Redis for retrieval-augmented LLM response caching
 
 ## Installation
 
@@ -101,6 +102,8 @@ $env:GROQ_API_KEY="your-groq-api-key"
 $env:QDRANT_URL="https://your-cluster-url"
 $env:QDRANT_API_KEY="your-qdrant-api-key"
 $env:DATABASE_URL="postgresql+asyncpg://user:password@host:5432/database"
+$env:REDIS_URL="redis://127.0.0.1:6379/0"
+$env:LLM_CACHE_TTL_SECONDS="86400"
 ```
 
 Optional model overrides:

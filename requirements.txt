@@ -11,3 +11,4 @@ langchain-huggingface>=0.3,<1
 python-dotenv>=1,<2
 qdrant-client>=1.18,<2
 sentence-transformers>=4,<6
+redis>=6,<7

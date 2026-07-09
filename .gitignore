@@ -5,5 +5,6 @@ venv/**
 __pycache__/
 *.py[cod]
 rag_ingestion/search_qdrant.py
-tests/
 tests/**
+!tests/test_persistence.py
+!tests/test_websocket_persistence_contract.py
