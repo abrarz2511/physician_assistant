@@ -12,3 +12,5 @@ python-dotenv>=1,<2
 qdrant-client>=1.18,<2
 sentence-transformers>=4,<6
 redis>=6,<7
+prometheus-client>=0.22,<1
+langsmith>=0.4,<1

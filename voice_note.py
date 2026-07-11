@@ -4,13 +4,18 @@ import asyncio
 import os
 import re
 import tempfile
+import time
 from functools import cache
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from groq import Groq
 
+from observability import metrics
+from observability.tracing import trace_span
+
 TranscriptSender = Callable[[dict], Awaitable[None]]
+TRANSCRIPTION_MODEL = "whisper-large-v3"
 
 
 class VoiceNote:
@@ -86,15 +91,44 @@ class VoiceNote:
     @staticmethod
     def transcribe(filename: str | os.PathLike[str]) -> str:
         path = Path(filename)
-        with path.open("rb") as audio_file:
-            transcription = get_groq_client().audio.transcriptions.create(
-                file=(path.name, audio_file.read()),
-                model="whisper-large-v3",
-                temperature=0,
-                response_format="verbose_json",
-            )
+        start = time.perf_counter()
+        status = "success"
+        with trace_span(
+            "transcribe_audio",
+            run_type="llm",
+            inputs={"audio_file": path.name},
+            metadata={"model": TRANSCRIPTION_MODEL},
+        ) as span:
+            try:
+                with path.open("rb") as audio_file:
+                    audio_bytes = audio_file.read()
+                    transcription = get_groq_client().audio.transcriptions.create(
+                        file=(path.name, audio_bytes),
+                        model=TRANSCRIPTION_MODEL,
+                        temperature=0,
+                        response_format="verbose_json",
+                    )
+            except Exception as exc:
+                status = "error"
+                span.set_error(exc)
+                raise
+            finally:
+                metrics.TRANSCRIPTION_CALLS.labels(
+                    model=TRANSCRIPTION_MODEL, status=status
+                ).inc()
+                metrics.TRANSCRIPTION_LATENCY.labels(
+                    model=TRANSCRIPTION_MODEL, status=status
+                ).observe(time.perf_counter() - start)
 
-        return transcription.text or ""
+            text = transcription.text or ""
+            span.set_outputs(
+                {
+                    "status": status,
+                    "audio_bytes": len(audio_bytes),
+                    "transcript_char_count": len(text),
+                }
+            )
+            return text
 
     @staticmethod
     def _safe_filename(value: str) -> str:

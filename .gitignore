@@ -8,3 +8,4 @@ rag_ingestion/search_qdrant.py
 tests/**
 !tests/test_persistence.py
 !tests/test_websocket_persistence_contract.py
+!tests/test_observability.py

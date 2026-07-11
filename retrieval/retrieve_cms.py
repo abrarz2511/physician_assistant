@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from rag_ingestion.indexing import bm25_search
+from observability import metrics
 from .retrieve_icd import Evidence, QdrantVectorSearcher, VectorSearcher
 
 CMS_CORPORA = ("mln_em_guide", "claims_manual_ch12")
@@ -98,6 +99,12 @@ class CMSRetriever:
         limit = self.config.channel_limit
         bm25_ids = [item[0] for item in bm25_search(self._indexes[corpus], query, limit)]
         vector_ids = list(self.vector_searcher.search(corpus, query, limit))
+        metrics.RETRIEVAL_HITS.labels(
+            component="cms", corpus=corpus, channel="bm25"
+        ).observe(len(bm25_ids))
+        metrics.RETRIEVAL_HITS.labels(
+            component="cms", corpus=corpus, channel="vector"
+        ).observe(len(vector_ids))
         bm25_ranks = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ids, 1)}
         vector_ranks = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids, 1)}
         hits: list[_HybridHit] = []
@@ -113,6 +120,9 @@ class CMSRetriever:
             if vector_rank is not None:
                 score += 0.5 / (self.config.rrf_k + vector_rank)
             hits.append(_HybridHit(record, score, bm25_rank, vector_rank))
+        metrics.RETRIEVAL_HITS.labels(
+            component="cms", corpus=corpus, channel="fused"
+        ).observe(len(hits))
         return sorted(hits, key=lambda hit: (-hit.score, hit.record["chunk_id"]))
 
     @staticmethod
@@ -173,6 +183,12 @@ class CMSRetriever:
             for corpus in CMS_CORPORA
             if corpus not in represented
         ]
+        metrics.RETRIEVAL_RESULTS.labels(component="cms", kind="evidence").observe(
+            len(selected)
+        )
+        metrics.RETRIEVAL_RESULTS.labels(component="cms", kind="warnings").observe(
+            len(warnings)
+        )
         return CMSRetrievalResult(
             setting=setting,
             patient_type=patient_type,
@@ -218,6 +234,9 @@ class CMSRetriever:
             if total_minutes is None or not isinstance(threshold, (int, float)) or total_minutes < threshold:
                 issues.append(CMSValidationIssue("prolonged_service", "Documented total time does not meet the supplied prolonged-service threshold"))
 
+        metrics.RETRIEVAL_RESULTS.labels(component="cms", kind="validation_issues").observe(
+            len(issues)
+        )
         return CMSValidationResult(valid=not issues, issues=issues)
 
 

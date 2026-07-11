@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, cast
@@ -11,6 +12,8 @@ from cache import LLMResponseCache, get_llm_cache
 from retrieval.retrieve_cms import CMSRetriever
 from retrieval.retrieve_icd import ICDRetriever, QdrantVectorSearcher
 from voice_note import get_groq_client
+from observability import metrics
+from observability.tracing import trace_span
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 SOAP_FIELDS = ("Subjective", "Objective", "Assessment", "Plan")
@@ -113,8 +116,44 @@ def create_code_recommendations(
         cms_retriever = cms_retriever or CMSRetriever(chunks_dir)
  
     diagnosis_queries = cast(list[dict[str, Any]], note["DiagnosisQueries"])
-    icd_result = icd_retriever.search(diagnosis_queries, service_date)
-    cms_result = cms_retriever.search(setting, patient_type)
+    icd_start = time.perf_counter()
+    icd_status = "success"
+    with trace_span(
+        "icd_retrieval",
+        run_type="retriever",
+        inputs={"query_count": len(diagnosis_queries), "service_date": _date_string(service_date)},
+        metadata={"component": "icd"},
+    ) as span:
+        try:
+            icd_result = icd_retriever.search(diagnosis_queries, service_date)
+        except Exception as exc:
+            icd_status = "error"
+            span.set_error(exc)
+            raise
+        finally:
+            metrics.RETRIEVAL_CALLS.labels(component="icd", status=icd_status).inc()
+            metrics.RETRIEVAL_LATENCY.labels(component="icd", status=icd_status).observe(
+                time.perf_counter() - icd_start
+            )
+    cms_start = time.perf_counter()
+    cms_status = "success"
+    with trace_span(
+        "cms_retrieval",
+        run_type="retriever",
+        inputs={"setting": setting, "patient_type": patient_type},
+        metadata={"component": "cms"},
+    ) as span:
+        try:
+            cms_result = cms_retriever.search(setting, patient_type)
+        except Exception as exc:
+            cms_status = "error"
+            span.set_error(exc)
+            raise
+        finally:
+            metrics.RETRIEVAL_CALLS.labels(component="cms", status=cms_status).inc()
+            metrics.RETRIEVAL_LATENCY.labels(component="cms", status=cms_status).observe(
+                time.perf_counter() - cms_start
+            )
     icd_payload = icd_result.to_dict()
     cms_payload = cms_result.to_dict()
 
@@ -147,15 +186,68 @@ def create_code_recommendations(
     content = response_cache.get(cache_query)
     cache_miss = content is None
     if cache_miss:
-        completion = (groq_client or get_groq_client()).chat.completions.create(
-            model=selected_model,
-            messages=messages,
-            temperature=0,
-            response_format={"type": "json_object"},
+        llm_start = time.perf_counter()
+        llm_status = "success"
+        with trace_span(
+            "groq_coding_completion",
+            run_type="llm",
+            inputs={"messages": messages},
+            metadata={"workflow": "coding", "model": selected_model},
+        ) as span:
+            try:
+                completion = (groq_client or get_groq_client()).chat.completions.create(
+                    model=selected_model,
+                    messages=messages,
+                    temperature=0,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                llm_status = "error"
+                span.set_error(exc)
+                raise
+            finally:
+                metrics.LLM_CALLS.labels(
+                    workflow="coding", model=selected_model, status=llm_status
+                ).inc()
+                metrics.LLM_LATENCY.labels(
+                    workflow="coding", model=selected_model, status=llm_status
+                ).observe(time.perf_counter() - llm_start)
+            content = completion.choices[0].message.content
+            span.set_outputs(
+                {
+                    "response": content,
+                    "content_char_count": len(content or ""),
+                }
+            )
+    with trace_span(
+        "parse_coding_recommendation",
+        run_type="parser",
+        inputs={"response": content},
+        metadata={"workflow": "coding"},
+    ) as span:
+        try:
+            recommendation = _parse_recommendation(content, len(diagnosis_queries))
+        except Exception as exc:
+            span.set_error(exc)
+            raise
+        span.set_outputs(
+            {
+                "recommendation": recommendation,
+                "diagnosis_result_count": len(recommendation["diagnosis_codes"]),
+            }
         )
-        content = completion.choices[0].message.content
-    recommendation = _parse_recommendation(content, len(diagnosis_queries))
-    _validate_grounding(recommendation, llm_context)
+    with trace_span(
+        "validate_grounding",
+        run_type="chain",
+        inputs={"recommendation": recommendation},
+        metadata={"workflow": "coding"},
+    ) as span:
+        try:
+            _validate_grounding(recommendation, llm_context)
+        except Exception as exc:
+            span.set_error(exc)
+            raise
+        span.set_outputs({"status": "success"})
     if cache_miss:
         response_cache.set(cache_query, cast(str, content))
 
@@ -163,12 +255,19 @@ def create_code_recommendations(
         field: note[field] for field in SOAP_FIELDS
     }
     validation_documentation.update(documentation_facts or {})
-    cms_validation = cms_retriever.validate_proposal(
-        recommendation["em_service"],
-        validation_documentation,
-        setting=setting,
-        patient_type=patient_type,
-    )
+    with trace_span(
+        "validate_cms_proposal",
+        run_type="chain",
+        inputs={"recommendation": recommendation["em_service"]},
+        metadata={"workflow": "coding"},
+    ) as span:
+        cms_validation = cms_retriever.validate_proposal(
+            recommendation["em_service"],
+            validation_documentation,
+            setting=setting,
+            patient_type=patient_type,
+        )
+        span.set_outputs(cms_validation.to_dict())
     return {
         "recommendation": recommendation,
         "cms_validation": cms_validation.to_dict(),
@@ -270,20 +369,26 @@ def _compact_cms_context(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _parse_recommendation(content: str | None, diagnosis_count: int) -> dict[str, Any]:
     if not content:
+        metrics.LLM_VALIDATION_FAILURES.labels(
+            workflow="coding", stage="empty_response"
+        ).inc()
         raise ValueError("Groq returned an empty coding recommendation")
     try:
         value = json.loads(content)
     except json.JSONDecodeError as exc:
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="json").inc()
         raise ValueError("Groq returned invalid JSON for coding recommendations") from exc
     if not isinstance(value, dict) or set(value) != {
         "diagnosis_codes",
         "em_service",
         "warnings",
     }:
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq coding output has an invalid top-level schema")
 
     diagnoses = value["diagnosis_codes"]
     if not isinstance(diagnoses, list) or len(diagnoses) != diagnosis_count:
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq must return one diagnosis code result per diagnosis query")
     expected_diagnosis_fields = {
         "query_index",
@@ -295,12 +400,16 @@ def _parse_recommendation(content: str | None, diagnosis_count: int) -> dict[str
     }
     for index, item in enumerate(diagnoses):
         if not isinstance(item, dict) or set(item) != expected_diagnosis_fields:
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq diagnosis code result has an invalid schema")
         if item["query_index"] != index:
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq diagnosis query indexes must preserve input order")
         if not all(isinstance(item[key], str) for key in ("code", "description", "rationale")):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq diagnosis code fields must be strings")
         if not _string_list(item["missing_documentation"]) or not _string_list(item["evidence_chunk_ids"]):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq diagnosis documentation and evidence fields must be string lists")
 
     em_service = value["em_service"]
@@ -317,21 +426,28 @@ def _parse_recommendation(content: str | None, diagnosis_count: int) -> dict[str
         "evidence_chunk_ids",
     }
     if not isinstance(em_service, dict) or set(em_service) != expected_em_fields:
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq E/M result has an invalid schema")
     if em_service["selection_method"] not in {"mdm", "time", "none"}:
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq returned an invalid E/M selection method")
     for key in ("service_code", "level", "selection_method", "rationale"):
         if not isinstance(em_service[key], str):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq E/M text fields must be strings")
     for key in ("modifiers", "add_on_codes", "missing_documentation", "evidence_chunk_ids"):
         if not _string_list(em_service[key]):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
             raise ValueError("Groq E/M list fields must contain only strings")
     if not isinstance(em_service["prolonged_service"], bool):
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq prolonged_service must be boolean")
     threshold = em_service["prolonged_threshold_minutes"]
     if threshold is not None and not isinstance(threshold, (int, float)):
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq prolonged threshold must be numeric or null")
     if not _string_list(value["warnings"]):
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="schema").inc()
         raise ValueError("Groq warnings must be a list of strings")
     return value
 
@@ -344,9 +460,11 @@ def _validate_grounding(
         retrieved = icd_diagnoses[item["query_index"]]
         allowed_codes = {candidate["code"] for candidate in retrieved["candidates"]}
         if item["code"] and item["code"] not in allowed_codes:
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="grounding").inc()
             raise ValueError("Groq selected an ICD code outside the retrieved candidates")
         allowed_ids = _evidence_ids(retrieved)
         if not set(item["evidence_chunk_ids"]).issubset(allowed_ids):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="grounding").inc()
             raise ValueError("Groq cited ICD evidence outside the retrieval context")
 
     cms_context = context["cms_retrieval"]
@@ -356,6 +474,7 @@ def _validate_grounding(
     if not set(recommendation["em_service"]["evidence_chunk_ids"]).issubset(
         allowed_cms_ids
     ):
+        metrics.LLM_VALIDATION_FAILURES.labels(workflow="coding", stage="grounding").inc()
         raise ValueError("Groq cited CMS evidence outside the retrieval context")
 
 

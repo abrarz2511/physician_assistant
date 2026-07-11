@@ -10,6 +10,8 @@ from typing import Any, Mapping, Protocol
 from redis import Redis
 from redis.exceptions import RedisError
 
+from observability import metrics
+
 LOGGER = logging.getLogger(__name__)
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 DEFAULT_TTL_SECONDS = 86_400
@@ -53,19 +55,27 @@ class RedisLLMCache:
         try:
             value = self.client.get(self._key(query))
         except RedisError as exc:
+            metrics.LLM_CACHE_EVENTS.labels(event="get", status="error").inc()
             LOGGER.warning("Redis cache lookup failed; continuing without cache: %s", exc)
             return None
         if not isinstance(value, str):
+            metrics.LLM_CACHE_EVENTS.labels(event="get", status="miss").inc()
             return None
         try:
             cached = json.loads(value)
         except (json.JSONDecodeError, TypeError):
+            metrics.LLM_CACHE_EVENTS.labels(event="get", status="malformed").inc()
             LOGGER.warning("Ignoring malformed Redis LLM cache entry")
             return None
         if not isinstance(cached, dict) or cached.get("query") != dict(query):
+            metrics.LLM_CACHE_EVENTS.labels(event="get", status="mismatch").inc()
             return None
         response = cached.get("response")
-        return response if isinstance(response, str) else None
+        if not isinstance(response, str):
+            metrics.LLM_CACHE_EVENTS.labels(event="get", status="malformed").inc()
+            return None
+        metrics.LLM_CACHE_EVENTS.labels(event="get", status="hit").inc()
+        return response
 
     def set(self, query: Mapping[str, Any], response: str) -> None:
         value = json.dumps(
@@ -77,7 +87,10 @@ class RedisLLMCache:
         try:
             self.client.set(self._key(query), value, ex=self.ttl_seconds)
         except RedisError as exc:
+            metrics.LLM_CACHE_EVENTS.labels(event="set", status="error").inc()
             LOGGER.warning("Redis cache write failed; response was not cached: %s", exc)
+        else:
+            metrics.LLM_CACHE_EVENTS.labels(event="set", status="success").inc()
 
     def _key(self, query: Mapping[str, Any]) -> str:
         serialized = json.dumps(

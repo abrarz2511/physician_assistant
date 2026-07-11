@@ -9,6 +9,7 @@ from typing import Any, Protocol, Sequence
 
 from rag_ingestion.embedding import DEFAULT_COLLECTION, DEFAULT_EMBEDDING_MODEL
 from rag_ingestion.indexing import bm25_search
+from observability import metrics
 
 ICD_CORPORA = ("icd_alphabetic", "icd_tabular", "icd_guidelines")
 FY2027_START = date(2026, 10, 1)
@@ -220,6 +221,12 @@ class ICDRetriever:
         limit = limit or self.config.channel_limit
         bm25_ids = [item[0] for item in bm25_search(self._indexes[corpus], query, limit)]
         vector_ids = list(self.vector_searcher.search(corpus, query, limit))
+        metrics.RETRIEVAL_HITS.labels(
+            component="icd", corpus=corpus, channel="bm25"
+        ).observe(len(bm25_ids))
+        metrics.RETRIEVAL_HITS.labels(
+            component="icd", corpus=corpus, channel="vector"
+        ).observe(len(vector_ids))
         bm25_ranks = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ids, 1)}
         vector_ranks = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids, 1)}
         all_ids = set(bm25_ranks) | set(vector_ranks)
@@ -236,6 +243,9 @@ class ICDRetriever:
             if vector_rank:
                 score += 0.5 / (self.config.rrf_k + vector_rank)
             hits.append(_HybridHit(record, score, bm25_rank, vector_rank))
+        metrics.RETRIEVAL_HITS.labels(
+            component="icd", corpus=corpus, channel="fused"
+        ).observe(len(hits))
         return sorted(hits, key=lambda hit: (-hit.score, hit.record["chunk_id"]))
 
     @staticmethod
@@ -407,6 +417,15 @@ class ICDRetriever:
         ]
         if not candidates:
             warnings.append("No exact Tabular leaf code was confirmed for this query")
+        metrics.RETRIEVAL_RESULTS.labels(component="icd", kind="candidates").observe(
+            len(candidates)
+        )
+        metrics.RETRIEVAL_RESULTS.labels(component="icd", kind="guidelines").observe(
+            len(guidelines)
+        )
+        metrics.RETRIEVAL_RESULTS.labels(component="icd", kind="warnings").observe(
+            len(warnings)
+        )
         return DiagnosisResult(
             query=query_data,
             candidates=candidates,

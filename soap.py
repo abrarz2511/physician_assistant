@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from typing import Literal, TypedDict, cast
 
 from voice_note import get_groq_client
+from observability import metrics
+from observability.tracing import trace_span
 
 DEFAULT_MODEL = "llama-3.3-70b-versatile"
 SOAP_FIELDS = ("Subjective", "Objective", "Assessment", "Plan")
@@ -62,39 +65,74 @@ def create_soap_note(transcript: str, model: str | None = None) -> SOAPNote:
     if not transcript:
         raise ValueError("The completed transcript cannot be empty.")
 
-    completion = get_groq_client().chat.completions.create(
-        model=model or os.getenv("GROQ_SOAP_MODEL", DEFAULT_MODEL),
-        messages=[
+    selected_model = model or os.getenv("GROQ_SOAP_MODEL", DEFAULT_MODEL)
+    messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": transcript},
-        ],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
+        ]
+    start = time.perf_counter()
+    status = "success"
+    with trace_span(
+        "create_soap_note",
+        run_type="chain",
+        inputs={"transcript": transcript},
+        metadata={"workflow": "soap", "model": selected_model},
+    ) as span:
+        try:
+            completion = get_groq_client().chat.completions.create(
+                model=selected_model,
+                messages=messages,
+                temperature=0,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            status = "error"
+            span.set_error(exc)
+            raise
+        finally:
+            metrics.LLM_CALLS.labels(
+                workflow="soap", model=selected_model, status=status
+            ).inc()
+            metrics.LLM_LATENCY.labels(
+                workflow="soap", model=selected_model, status=status
+            ).observe(time.perf_counter() - start)
 
-    content = completion.choices[0].message.content
-    if not content:
-        raise ValueError("Groq returned an empty SOAP note.")
+        content = completion.choices[0].message.content
+        if not content:
+            metrics.LLM_VALIDATION_FAILURES.labels(
+                workflow="soap", stage="empty_response"
+            ).inc()
+            raise ValueError("Groq returned an empty SOAP note.")
 
-    try:
-        note = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Groq returned invalid JSON for the SOAP note.") from exc
+        try:
+            note = json.loads(content)
+        except json.JSONDecodeError as exc:
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="soap", stage="json").inc()
+            raise ValueError("Groq returned invalid JSON for the SOAP note.") from exc
 
-    if not isinstance(note, dict):
-        raise ValueError("Groq returned a SOAP note that is not a JSON object.")
+        if not isinstance(note, dict):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="soap", stage="schema").inc()
+            raise ValueError("Groq returned a SOAP note that is not a JSON object.")
 
-    expected_fields = {*SOAP_FIELDS, "DiagnosisQueries"}
-    if set(note) != expected_fields or not all(
-        isinstance(note[field], str) for field in SOAP_FIELDS
-    ) or not isinstance(note["DiagnosisQueries"], list) or not all(
-        _valid_diagnosis_query(query) for query in note["DiagnosisQueries"]
-    ):
-        raise ValueError(
-            "Groq SOAP output must contain the four SOAP strings and a valid "
-            "DiagnosisQueries array."
+        expected_fields = {*SOAP_FIELDS, "DiagnosisQueries"}
+        if set(note) != expected_fields or not all(
+            isinstance(note[field], str) for field in SOAP_FIELDS
+        ) or not isinstance(note["DiagnosisQueries"], list) or not all(
+            _valid_diagnosis_query(query) for query in note["DiagnosisQueries"]
+        ):
+            metrics.LLM_VALIDATION_FAILURES.labels(workflow="soap", stage="schema").inc()
+            raise ValueError(
+                "Groq SOAP output must contain the four SOAP strings and a valid "
+                "DiagnosisQueries array."
+            )
+
+        span.set_outputs(
+            {
+                "soap_note": note,
+                "diagnosis_query_count": len(note["DiagnosisQueries"]),
+                "content_char_count": len(content),
+            }
         )
-
     return cast(SOAPNote, note)
 
 

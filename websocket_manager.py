@@ -6,6 +6,8 @@ from typing import AsyncIterator
 from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from observability import metrics
+
 
 @dataclass
 class AudioChunk:
@@ -65,9 +67,11 @@ class WebSocketManager:
                 if chunk is None:
                     text = message.get("text")
                     if text == "stop":
+                        metrics.AUDIO_CHUNKS.labels(status="stopped").inc()
                         await self.send_json(session_id, {"type": "stream.stopped"})
                         break
 
+                    metrics.AUDIO_CHUNKS.labels(status="invalid").inc()
                     await self.send_json(
                         session_id,
                         {
@@ -79,6 +83,8 @@ class WebSocketManager:
 
                 sequence = self._chunk_sequences.get(session_id, 0) + 1
                 self._chunk_sequences[session_id] = sequence
+                metrics.AUDIO_CHUNKS.labels(status="received").inc()
+                metrics.AUDIO_BYTES.inc(len(chunk))
                 yield AudioChunk(session_id=session_id, data=chunk, sequence=sequence)
         except WebSocketDisconnect:
             raise

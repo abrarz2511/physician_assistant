@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any
@@ -13,6 +14,8 @@ from starlette.websockets import WebSocketDisconnect
 
 from codes import create_code_recommendations_async
 from database import dispose_engine, get_db_session, get_session_factory
+from observability import metrics
+from observability.tracing import text_hash, trace_span
 from repositories import (
     create_encounter,
     finalize_encounter,
@@ -33,6 +36,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+metrics.setup_metrics(app)
 
 
 class NoteRequest(BaseModel):
@@ -167,61 +171,96 @@ async def stream_audio(session_id: str, websocket: WebSocket):
         async with get_session_factory()() as session:
             encounter = await create_encounter(session, session_id)
     except (SQLAlchemyError, RuntimeError):
+        metrics.WEBSOCKET_CONNECTIONS.labels(event="connect", status="storage_error").inc()
         await websocket.close(code=1011, reason="Encounter storage is unavailable.")
         return
 
     encounter_id = encounter.id
     connection_id = str(encounter_id)
+    stream_started = time.perf_counter()
+    final_status = "completed"
+    chunk_count = 0
+    total_bytes = 0
     await websocket_manager.connect(session_id, websocket, connection_id)
+    metrics.WEBSOCKET_CONNECTIONS.labels(event="connect", status="accepted").inc()
+    metrics.WEBSOCKET_ACTIVE.inc()
     voice_note = VoiceNote(session_id=session_id)
     disconnected = False
 
-    try:
-        async for chunk in websocket_manager.stream_audio_chunks(connection_id, websocket):
-            await voice_note.process_chunk(
-                chunk.data,
-                chunk.sequence,
-                lambda message: websocket_manager.send_json(connection_id, message),
-            )
-    except WebSocketDisconnect:
-        disconnected = True
-    finally:
-        transcript = await voice_note.finish()
-        storage_failed = False
+    with trace_span(
+        "audio_stream",
+        run_type="chain",
+        inputs={"session_hash": text_hash(session_id)},
+        metadata={"encounter_id": connection_id},
+    ) as span:
         try:
-            async with get_session_factory()() as session:
-                await finalize_encounter(
-                    session,
-                    encounter_id,
-                    transcript,
-                    (
-                        "disconnected"
-                        if disconnected
-                        else "failed"
-                        if voice_note.transcription_failed and not transcript
-                        else "completed"
-                    ),
+            async for chunk in websocket_manager.stream_audio_chunks(connection_id, websocket):
+                chunk_count += 1
+                total_bytes += len(chunk.data)
+                await voice_note.process_chunk(
+                    chunk.data,
+                    chunk.sequence,
+                    lambda message: websocket_manager.send_json(connection_id, message),
                 )
-        except SQLAlchemyError:
-            storage_failed = True
+        except WebSocketDisconnect:
+            disconnected = True
+            final_status = "disconnected"
+        finally:
+            transcript = await voice_note.finish()
+            storage_failed = False
+            persisted_status = (
+                "disconnected"
+                if disconnected
+                else "failed"
+                if voice_note.transcription_failed and not transcript
+                else "completed"
+            )
+            final_status = persisted_status
+            try:
+                async with get_session_factory()() as session:
+                    await finalize_encounter(
+                        session,
+                        encounter_id,
+                        transcript,
+                        persisted_status,
+                    )
+            except SQLAlchemyError as exc:
+                storage_failed = True
+                final_status = "storage_error"
+                span.set_error(exc)
 
-        if not disconnected:
-            if storage_failed:
-                await websocket_manager.send_json(
-                    connection_id,
-                    {"type": "stream.error", "message": "Transcript storage failed."},
-                )
-            else:
-                await websocket_manager.send_json(
-                    connection_id,
-                    {
-                        "type": "transcript.final",
-                        "session_id": session_id,
-                        "encounter_id": str(encounter_id),
-                        "text": transcript,
-                    },
-                )
-        websocket_manager.disconnect(connection_id)
+            if not disconnected:
+                if storage_failed:
+                    await websocket_manager.send_json(
+                        connection_id,
+                        {"type": "stream.error", "message": "Transcript storage failed."},
+                    )
+                else:
+                    await websocket_manager.send_json(
+                        connection_id,
+                        {
+                            "type": "transcript.final",
+                            "session_id": session_id,
+                            "encounter_id": str(encounter_id),
+                            "text": transcript,
+                        },
+                    )
+            span.set_outputs(
+                {
+                    "status": final_status,
+                    "chunk_count": chunk_count,
+                    "total_audio_bytes": total_bytes,
+                    "transcript_char_count": len(transcript),
+                }
+            )
+            metrics.STREAM_DURATION.labels(status=final_status).observe(
+                time.perf_counter() - stream_started
+            )
+            metrics.WEBSOCKET_CONNECTIONS.labels(
+                event="disconnect", status=final_status
+            ).inc()
+            metrics.WEBSOCKET_ACTIVE.dec()
+            websocket_manager.disconnect(connection_id)
 
 
 def _encounter_summary(encounter: Any) -> dict[str, Any]:

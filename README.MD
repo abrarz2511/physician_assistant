@@ -113,6 +113,20 @@ $env:GROQ_SOAP_MODEL="llama-3.3-70b-versatile"
 $env:GROQ_CODES_MODEL="llama-3.3-70b-versatile"
 ```
 
+Optional observability configuration:
+
+```powershell
+$env:LANGSMITH_TRACING="false"
+$env:LANGSMITH_API_KEY="your-langsmith-api-key"
+$env:LANGSMITH_PROJECT="physician-assistant-local"
+$env:OBSERVABILITY_REDACT_CONTENT="true"
+```
+
+`OBSERVABILITY_REDACT_CONTENT=true` is the recommended default for clinical
+workflows. LangSmith traces include metadata, counts, IDs, timings, and error
+types while redacting transcripts, prompts, SOAP note text, retrieval evidence,
+and model outputs.
+
 The embedding and retrieval modules also load Qdrant credentials from a local
 `.env` file. Never commit API keys; `.env` is ignored by Git.
 
@@ -143,6 +157,35 @@ The server retranscribes the accumulated temporary audio after every received
 chunk. `connection.accepted` returns a server-generated `encounter_id`. On stop
 or disconnect, the server removes temporary audio and stores the final transcript
 in PostgreSQL.
+
+## Observability
+
+The API exposes Prometheus metrics at:
+
+```text
+http://127.0.0.1:8000/metrics
+```
+
+Start the local observability stack:
+
+```powershell
+docker compose up -d postgres redis postgres_exporter prometheus grafana
+.\venv\Scripts\python.exe -m uvicorn main:app --reload
+```
+
+Open:
+
+```text
+Prometheus: http://127.0.0.1:9090
+Grafana:    http://127.0.0.1:3000
+User:       admin
+Password:   local-development-only
+```
+
+Prometheus scrapes the FastAPI app through `host.docker.internal:8000`, so keep
+the API running on port 8000 when using the provided local configuration.
+Grafana provisions the Prometheus datasource and the Physician Assistant
+Overview dashboard automatically.
 
 ### Generate a SOAP note
 
