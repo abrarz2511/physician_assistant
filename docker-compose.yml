@@ -1,4 +1,21 @@
 services:
+  api:
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://physician_app:local-development-only@postgres:5432/physician_assistant
+      REDIS_URL: redis://redis:6379/0
+      LLM_CACHE_TTL_SECONDS: 86400
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   postgres:
     image: postgres:17-alpine
     environment:

@@ -32,15 +32,16 @@ Doc compliance/            CMS source documents
 
 ## Prerequisites
 
-- Python 3.10 or newer
+- Docker Desktop for running the backend and local services together
+- Python 3.10 or newer for local, non-Docker development
 - A Groq API key for transcription, SOAP generation, and coding recommendations
 - A Qdrant Cloud collection for hybrid vector retrieval
-- Docker Desktop, or PostgreSQL 14 or newer, for encounter storage
-- Redis for retrieval-augmented LLM response caching
+- A populated Qdrant collection for retrieval-augmented coding recommendations
 
-## Installation
+## Local Python Installation
 
-From PowerShell:
+Use this only when running the backend directly on the host instead of through
+Docker Compose. From PowerShell:
 
 ```powershell
 python -m venv venv
@@ -48,43 +49,76 @@ python -m venv venv
 .\venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Start PostgreSQL with Docker
+## Run Everything with Docker Compose
 
-The included `docker-compose.yml` runs PostgreSQL 17 locally. Start Docker
-Desktop first, then run these commands from the repository root:
+The included `docker-compose.yml` runs the FastAPI backend and local supporting
+services together:
+
+- `api`: FastAPI backend on `http://127.0.0.1:8000`
+- `postgres`: encounter storage on host port `5433`
+- `redis`: LLM response cache on host port `6379`
+- `postgres_exporter`: PostgreSQL metrics on host port `9187`
+- `prometheus`: metrics scraping on `http://127.0.0.1:9090`
+- `grafana`: dashboards on `http://127.0.0.1:3000`
+
+Create a local `.env` file from the example and fill in the external service
+credentials:
 
 ```powershell
-docker compose up -d postgres
-docker compose ps postgres
+Copy-Item .env.example .env
 ```
 
-Wait until the status reports `healthy`. The development database is exposed
-on `localhost:5432` with these Compose defaults:
+At minimum, set these values in `.env`:
 
 ```text
-Database: physician_assistant
-User:     physician_app
-Password: local-development-only
+GROQ_API_KEY=your-groq-api-key
+QDRANT_URL=https://your-cluster-url
+QDRANT_API_KEY=your-qdrant-api-key
 ```
 
-Configure the application connection and apply the schema migration:
+Do not set `DATABASE_URL` or `REDIS_URL` for the Compose workflow unless you
+intend to override the local containers. Compose supplies these container
+network values for the API service:
+
+```text
+DATABASE_URL=postgresql+asyncpg://physician_app:local-development-only@postgres:5432/physician_assistant
+REDIS_URL=redis://redis:6379/0
+```
+
+Start the full stack from the repository root:
 
 ```powershell
-$env:DATABASE_URL="postgresql+asyncpg://physician_app:local-development-only@localhost:5432/physician_assistant"
-.\venv\Scripts\python.exe -m alembic upgrade head
+docker compose up --build
+```
+
+The `api` container runs `alembic upgrade head` before starting Uvicorn, so the
+database schema is applied automatically after PostgreSQL becomes healthy.
+
+Open:
+
+```text
+API:        http://127.0.0.1:8000
+Metrics:    http://127.0.0.1:8000/metrics
+Prometheus: http://127.0.0.1:9090
+Grafana:    http://127.0.0.1:3000
+User:       admin
+Password:   local-development-only
 ```
 
 Useful Docker commands:
 
 ```powershell
-# View PostgreSQL logs
-docker compose logs -f postgres
+# Start in the background
+docker compose up -d --build
 
-# Stop the database without deleting its data
-docker compose stop postgres
+# Check service status
+docker compose ps
 
-# Start an existing stopped database
-docker compose start postgres
+# Follow backend logs
+docker compose logs -f api
+
+# Follow all service logs
+docker compose logs -f
 
 # Remove the container and network while preserving the named data volume
 docker compose down
@@ -92,6 +126,10 @@ docker compose down
 
 To permanently delete the local database data, run `docker compose down -v`.
 Do not use the development password in a deployed environment.
+
+Prometheus scrapes the API at `api:8000` over the Compose network, so the
+provided observability stack expects the backend to run as the Compose `api`
+service.
 
 ## Configuration
 
@@ -130,7 +168,7 @@ and model outputs.
 The embedding and retrieval modules also load Qdrant credentials from a local
 `.env` file. Never commit API keys; `.env` is ignored by Git.
 
-## Run the API
+## Run the API Without Docker
 
 ```powershell
 .\venv\Scripts\python.exe -m uvicorn main:app --reload
@@ -166,11 +204,10 @@ The API exposes Prometheus metrics at:
 http://127.0.0.1:8000/metrics
 ```
 
-Start the local observability stack:
+The full Compose stack starts Prometheus and Grafana with the backend:
 
 ```powershell
-docker compose up -d postgres redis postgres_exporter prometheus grafana
-.\venv\Scripts\python.exe -m uvicorn main:app --reload
+docker compose up -d --build
 ```
 
 Open:
@@ -182,8 +219,7 @@ User:       admin
 Password:   local-development-only
 ```
 
-Prometheus scrapes the FastAPI app through `host.docker.internal:8000`, so keep
-the API running on port 8000 when using the provided local configuration.
+Prometheus scrapes the FastAPI app through `api:8000` on the Compose network.
 Grafana provisions the Prometheus datasource and the Physician Assistant
 Overview dashboard automatically.
 
