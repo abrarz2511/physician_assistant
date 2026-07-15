@@ -14,6 +14,7 @@ const status = reactive({
 const encounters = ref([]);
 const selectedEncounter = ref(null);
 const selectedId = ref("");
+const activePage = ref("overview");
 const recommendForm = reactive({
   setting: "office outpatient",
   patient_type: "established patient",
@@ -44,6 +45,16 @@ const selectedSummary = computed(() => {
     return "No encounter selected";
   }
   return `${selectedEncounter.value.status} / ${selectedEncounter.value.encounter_id}`;
+});
+
+const pageTitle = computed(() => {
+  const titles = {
+    overview: "Clinical Overview",
+    encounters: "Encounters",
+    reports: "Reports",
+    settings: "Settings",
+  };
+  return titles[activePage.value] || titles.overview;
 });
 
 const recommendationPayload = computed(() => {
@@ -272,200 +283,231 @@ onMounted(async () => {
     <section class="app-frame">
       <nav class="rail" aria-label="Primary">
         <div class="rail-logo">PA</div>
-        <button class="rail-button active" type="button" title="Overview">⌂</button>
-        <button class="rail-button" type="button" title="Encounters">≡</button>
-        <button class="rail-button" type="button" title="Reports">▧</button>
-        <button class="rail-button" type="button" title="Settings">⚙</button>
+        <button :class="['rail-button', { active: activePage === 'overview' }]" type="button" title="Overview" @click="activePage = 'overview'">O</button>
+        <button :class="['rail-button', { active: activePage === 'encounters' }]" type="button" title="Encounters" @click="activePage = 'encounters'">E</button>
+        <button :class="['rail-button', { active: activePage === 'reports' }]" type="button" title="Reports" @click="activePage = 'reports'">R</button>
+        <button :class="['rail-button', { active: activePage === 'settings' }]" type="button" title="Settings" @click="activePage = 'settings'">S</button>
       </nav>
 
-    <aside class="sidebar">
-      <div class="brand-block">
-        <div class="brand-mark">PA</div>
-        <div>
-          <h1>Clinical Overview</h1>
-          <p>Encounter documentation and coding support</p>
-        </div>
-      </div>
-
-      <section class="panel compact">
-        <div class="panel-header">
-          <h2>API</h2>
-          <span :class="['pill', status.api.toLowerCase()]">{{ status.api }}</span>
-        </div>
-        <p class="muted">{{ status.apiDetail }}</p>
-        <button class="secondary" type="button" @click="checkApi">Check</button>
-      </section>
-
-      <section class="panel encounters-panel">
-        <div class="panel-header">
-          <h2>Encounters</h2>
-          <button class="icon-button" type="button" title="Refresh encounters" @click="loadEncounters">
-            ↻
-          </button>
-        </div>
-        <div class="encounter-list">
-          <button
-            v-for="encounter in encounters"
-            :key="encounter.encounter_id"
-            :class="['encounter-row', { active: selectedId === encounter.encounter_id }]"
-            type="button"
-            @click="selectEncounter(encounter.encounter_id)"
-          >
-            <span>{{ encounter.status }}</span>
-            <small>{{ encounter.encounter_id }}</small>
-          </button>
-          <p v-if="!encounters.length" class="empty">No encounters yet</p>
-        </div>
-      </section>
-    </aside>
-
-    <section class="workspace">
-      <header class="topbar">
-        <div>
-          <p class="eyebrow">Current Encounter</p>
-          <h2>{{ selectedSummary }}</h2>
-        </div>
-        <label class="search-box">
-          <span>⌕</span>
-          <input placeholder="Search encounters" />
-        </label>
-        <div class="topbar-actions">
-          <span :class="['pill', status.api.toLowerCase()]">{{ status.api }}</span>
-          <button class="secondary" type="button" :disabled="status.loading" @click="loadEncounters">
-            Refresh
-          </button>
-        </div>
-      </header>
-
-      <p v-if="status.error" class="error-banner">{{ status.error }}</p>
-
-      <div class="grid">
-        <section class="panel recorder">
-          <div class="panel-header">
-            <h2>Audio Capture</h2>
-            <span :class="['pill', recorderState.recording ? 'online' : 'neutral']">
-              {{ recorderState.message }}
-            </span>
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">{{ activePage === "overview" ? "Current Encounter" : "Physician Assistant" }}</p>
+            <h2>{{ activePage === "overview" ? selectedSummary : pageTitle }}</h2>
           </div>
-          <div class="metric-card hero-metric">
-            <span>Live transcription</span>
-            <strong>{{ recorderState.recording ? "Active" : "Ready" }}</strong>
-            <small>{{ recorderState.encounterId || "Waiting for encounter" }}</small>
-          </div>
-          <label>
-            Session ID
-            <input v-model="recorderState.sessionId" :disabled="recorderState.recording" />
+          <label class="search-box">
+            <span>Search</span>
+            <input placeholder="Search encounters" />
           </label>
-          <div class="button-row">
-            <button type="button" :disabled="recorderState.recording" @click="startRecording">
-              Start Recording
-            </button>
-            <button class="danger" type="button" :disabled="!recorderState.recording" @click="stopRecording">
-              Stop
+          <div class="topbar-actions">
+            <span :class="['pill', status.api.toLowerCase()]">{{ status.api }}</span>
+            <button class="secondary" type="button" :disabled="status.loading" @click="loadEncounters">
+              Refresh
             </button>
           </div>
-          <dl class="meta-grid">
-            <div>
-              <dt>Connection</dt>
-              <dd>{{ recorderState.connected ? "Connected" : "Closed" }}</dd>
-            </div>
-            <div>
-              <dt>Encounter</dt>
-              <dd>{{ recorderState.encounterId || "Pending" }}</dd>
-            </div>
-          </dl>
-          <textarea :value="recorderState.transcript" readonly placeholder="Live transcript appears here"></textarea>
-          <div class="event-log">
-            <p v-for="event in recorderState.events" :key="event.id">
-              <span>{{ event.at }}</span>{{ event.message }}
-            </p>
-          </div>
-        </section>
+        </header>
 
-        <section class="panel detail-panel">
-          <div class="panel-header">
-            <h2>Encounter Detail</h2>
-            <button type="button" :disabled="!selectedId || status.loading" @click="createSoapNote">
-              Generate SOAP
-            </button>
-          </div>
-          <dl v-if="selectedEncounter" class="meta-grid">
-            <div>
-              <dt>Status</dt>
-              <dd>{{ selectedEncounter.status }}</dd>
+        <p v-if="status.error" class="error-banner">{{ status.error }}</p>
+
+        <div v-if="activePage === 'overview'" class="grid">
+          <section class="panel recorder">
+            <div class="panel-header">
+              <h2>Audio Capture</h2>
+              <span :class="['pill', recorderState.recording ? 'online' : 'neutral']">
+                {{ recorderState.message }}
+              </span>
             </div>
-            <div>
-              <dt>SOAP</dt>
-              <dd>{{ selectedEncounter.has_soap_note ? "Ready" : "Missing" }}</dd>
+            <div class="metric-card hero-metric">
+              <span>Live transcription</span>
+              <strong>{{ recorderState.recording ? "Active" : "Ready" }}</strong>
+              <small>{{ recorderState.encounterId || "Waiting for encounter" }}</small>
             </div>
-            <div>
-              <dt>Coding</dt>
-              <dd>{{ selectedEncounter.has_coding_recommendation ? "Ready" : "Missing" }}</dd>
+            <label>
+              Session ID
+              <input v-model="recorderState.sessionId" :disabled="recorderState.recording" />
+            </label>
+            <div class="button-row">
+              <button type="button" :disabled="recorderState.recording" @click="startRecording">
+                Start Recording
+              </button>
+              <button class="danger" type="button" :disabled="!recorderState.recording" @click="stopRecording">
+                Stop
+              </button>
             </div>
-          </dl>
-          <div v-if="selectedEncounter" class="artifact-grid">
+            <dl class="meta-grid">
+              <div>
+                <dt>Connection</dt>
+                <dd>{{ recorderState.connected ? "Connected" : "Closed" }}</dd>
+              </div>
+              <div>
+                <dt>Encounter</dt>
+                <dd>{{ recorderState.encounterId || "Pending" }}</dd>
+              </div>
+            </dl>
+            <textarea :value="recorderState.transcript" readonly placeholder="Live transcript appears here"></textarea>
+            <div class="event-log">
+              <p v-for="event in recorderState.events" :key="event.id">
+                <span>{{ event.at }}</span>{{ event.message }}
+              </p>
+            </div>
+          </section>
+
+          <section class="panel recommendation-panel">
+            <div class="panel-header">
+              <h2>Coding Recommendation</h2>
+              <button type="button" :disabled="!selectedId || status.loading" @click="createRecommendation">
+                Recommend
+              </button>
+            </div>
+            <div class="form-grid">
+              <label>
+                Setting
+                <input v-model="recommendForm.setting" />
+              </label>
+              <label>
+                Patient Type
+                <input v-model="recommendForm.patient_type" />
+              </label>
+              <label>
+                Service Date
+                <input v-model="recommendForm.service_date" type="date" />
+              </label>
+              <label>
+                Total Time
+                <input v-model="recommendForm.total_time_minutes" type="number" min="0" placeholder="Minutes" />
+              </label>
+            </div>
+            <div class="form-grid three">
+              <label>
+                MDM Problems
+                <input v-model="recommendForm.mdm_problems" placeholder="Example: moderate" />
+              </label>
+              <label>
+                MDM Data
+                <input v-model="recommendForm.mdm_data" placeholder="Example: labs reviewed" />
+              </label>
+              <label>
+                MDM Risk
+                <input v-model="recommendForm.mdm_risk" placeholder="Example: prescription management" />
+              </label>
+            </div>
+            <label class="checkbox-row">
+              <input v-model="recommendForm.same_day_separate_em" type="checkbox" />
+              Same-day separate E/M service
+            </label>
             <article>
+              <h3>Latest Recommendation</h3>
+              <pre>{{ selectedEncounter?.coding_recommendation ? JSON.stringify(selectedEncounter.coding_recommendation, null, 2) : "No coding recommendation" }}</pre>
+            </article>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <h2>Encounter Detail</h2>
+              <button type="button" :disabled="!selectedId || status.loading" @click="createSoapNote">
+                Generate SOAP
+              </button>
+            </div>
+            <dl v-if="selectedEncounter" class="meta-grid">
+              <div>
+                <dt>Status</dt>
+                <dd>{{ selectedEncounter.status }}</dd>
+              </div>
+              <div>
+                <dt>SOAP</dt>
+                <dd>{{ selectedEncounter.has_soap_note ? "Ready" : "Missing" }}</dd>
+              </div>
+              <div>
+                <dt>Coding</dt>
+                <dd>{{ selectedEncounter.has_coding_recommendation ? "Ready" : "Missing" }}</dd>
+              </div>
+            </dl>
+            <div v-if="selectedEncounter" class="artifact-grid">
+              <article>
+                <h3>Transcript</h3>
+                <pre>{{ selectedEncounter.transcript || "No final transcript" }}</pre>
+              </article>
+              <article>
+                <h3>SOAP Note</h3>
+                <pre>{{ selectedEncounter.soap_note ? JSON.stringify(selectedEncounter.soap_note, null, 2) : "No SOAP note" }}</pre>
+              </article>
+            </div>
+            <p v-else class="empty">Select or record an encounter to begin.</p>
+          </section>
+        </div>
+
+        <div v-else-if="activePage === 'encounters'" class="page-grid encounters-page">
+          <section class="panel encounters-panel primary-panel">
+            <div class="panel-header">
+              <h2>Encounters</h2>
+              <button class="icon-button" type="button" title="Refresh encounters" @click="loadEncounters">
+                R
+              </button>
+            </div>
+            <div class="encounter-list full-list">
+              <button
+                v-for="encounter in encounters"
+                :key="encounter.encounter_id"
+                :class="['encounter-row', { active: selectedId === encounter.encounter_id }]"
+                type="button"
+                @click="selectEncounter(encounter.encounter_id)"
+              >
+                <span>{{ encounter.status }}</span>
+                <small>{{ encounter.encounter_id }}</small>
+              </button>
+              <p v-if="!encounters.length" class="empty">No encounters yet</p>
+            </div>
+          </section>
+
+          <section class="panel encounter-preview">
+            <div class="panel-header">
+              <h2>Selected Encounter</h2>
+              <button type="button" :disabled="!selectedId || status.loading" @click="createSoapNote">
+                Generate SOAP
+              </button>
+            </div>
+            <dl v-if="selectedEncounter" class="meta-grid">
+              <div>
+                <dt>Status</dt>
+                <dd>{{ selectedEncounter.status }}</dd>
+              </div>
+              <div>
+                <dt>SOAP</dt>
+                <dd>{{ selectedEncounter.has_soap_note ? "Ready" : "Missing" }}</dd>
+              </div>
+              <div>
+                <dt>Coding</dt>
+                <dd>{{ selectedEncounter.has_coding_recommendation ? "Ready" : "Missing" }}</dd>
+              </div>
+            </dl>
+            <article v-if="selectedEncounter">
               <h3>Transcript</h3>
               <pre>{{ selectedEncounter.transcript || "No final transcript" }}</pre>
             </article>
-            <article>
-              <h3>SOAP Note</h3>
-              <pre>{{ selectedEncounter.soap_note ? JSON.stringify(selectedEncounter.soap_note, null, 2) : "No SOAP note" }}</pre>
-            </article>
-          </div>
-          <p v-else class="empty">Select or record an encounter to begin.</p>
-        </section>
+            <p v-else class="empty">Select an encounter to inspect it.</p>
+          </section>
+        </div>
 
-        <section class="panel recommendation-panel">
-          <div class="panel-header">
-            <h2>Coding Recommendation</h2>
-            <button type="button" :disabled="!selectedId || status.loading" @click="createRecommendation">
-              Recommend
-            </button>
-          </div>
-          <div class="form-grid">
-            <label>
-              Setting
-              <input v-model="recommendForm.setting" />
-            </label>
-            <label>
-              Patient Type
-              <input v-model="recommendForm.patient_type" />
-            </label>
-            <label>
-              Service Date
-              <input v-model="recommendForm.service_date" type="date" />
-            </label>
-            <label>
-              Total Time
-              <input v-model="recommendForm.total_time_minutes" type="number" min="0" placeholder="Minutes" />
-            </label>
-          </div>
-          <div class="form-grid three">
-            <label>
-              MDM Problems
-              <input v-model="recommendForm.mdm_problems" placeholder="Example: moderate" />
-            </label>
-            <label>
-              MDM Data
-              <input v-model="recommendForm.mdm_data" placeholder="Example: labs reviewed" />
-            </label>
-            <label>
-              MDM Risk
-              <input v-model="recommendForm.mdm_risk" placeholder="Example: prescription management" />
-            </label>
-          </div>
-          <label class="checkbox-row">
-            <input v-model="recommendForm.same_day_separate_em" type="checkbox" />
-            Same-day separate E/M service
-          </label>
-          <article>
-            <h3>Latest Recommendation</h3>
-            <pre>{{ selectedEncounter?.coding_recommendation ? JSON.stringify(selectedEncounter.coding_recommendation, null, 2) : "No coding recommendation" }}</pre>
-          </article>
-        </section>
-      </div>
-    </section>
+        <div v-else-if="activePage === 'settings'" class="page-grid settings-page">
+          <section class="panel compact primary-panel">
+            <div class="panel-header">
+              <h2>API</h2>
+              <span :class="['pill', status.api.toLowerCase()]">{{ status.api }}</span>
+            </div>
+            <p class="muted">{{ status.apiDetail }}</p>
+            <button class="secondary" type="button" @click="checkApi">Check</button>
+          </section>
+        </div>
+
+        <div v-else class="page-grid">
+          <section class="panel primary-panel">
+            <div class="panel-header">
+              <h2>Reports</h2>
+            </div>
+            <p class="empty">No reports are available yet.</p>
+          </section>
+        </div>
+      </section>
     </section>
   </main>
 </template>
