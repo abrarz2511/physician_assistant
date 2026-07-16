@@ -142,6 +142,41 @@ Connect to:
 ws://127.0.0.1:8000/ws/audio/{session_id}
 ```
 
+## Fly.io deployment
+
+The production API runs in `iad` with PostgreSQL and Redis as separate,
+private Fly apps. Their configuration lives under `infra/postgres` and
+`infra/redis`. Neither data service should have a public IP address.
+
+Provisioning requires three generated secrets: `POSTGRES_PASSWORD` on the
+Postgres app, `REDIS_PASSWORD` on the Redis app, and URL-encoded connection
+strings stored as `DATABASE_URL` and `REDIS_URL` on the API app. Never put
+those values in a tracked file or command transcript.
+
+Create one encrypted 1 GB volume in `iad` for each service, with scheduled
+snapshots enabled, before its first deployment. PostgreSQL 18 mounts its volume
+at `/var/lib/postgresql`; Redis mounts its volume at `/data`. The API's Fly
+release command runs `alembic upgrade head` once per deploy and stops the
+release if a migration fails.
+
+The service addresses on Fly's private Flycast network are:
+
+```text
+physician-assistant-srck5q-db.flycast:5432
+physician-assistant-srck5q-cache.flycast:6379
+```
+
+For a local-to-Fly database migration, first verify that `.env` contains a
+working local `DATABASE_URL`. Create a PostgreSQL custom-format dump under the
+ignored `.fly-migration/` directory with `--no-owner --no-acl`, proxy port 5432
+from the private Postgres app to a temporary local port, restore the dump, run
+`ANALYZE`, and compare the Alembic revision and per-table row counts before
+switching the API secret. Delete the temporary dump after verification.
+
+These are intentionally low-cost, single-node services. Fly does not manage
+their upgrades, failover, backups, or disaster recovery. Practice restoring a
+volume snapshot before relying on the database for clinical records.
+
 The client sends binary WebM audio chunks and finishes the stream by sending
 the text message `stop`. Server messages use these types:
 

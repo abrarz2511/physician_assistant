@@ -2,4 +2,11 @@ fly.toml
 .git/
 __pycache__/
 .envrc
-.venv/
+venv/
+venv/**
+.pytest_cache/
+.fly-migration/
+frontend/node_modules/
+frontend/*.log
+ICD-10/
+Doc compliance/

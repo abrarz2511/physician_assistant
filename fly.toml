@@ -4,9 +4,13 @@
 #
 
 app = 'physician-assistant-srck5q'
-primary_region = 'dfw'
+primary_region = 'iad'
 
 [build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  release_command = "/app/.venv/bin/alembic upgrade head"
 
 [http_service]
   internal_port = 8080
@@ -16,8 +20,14 @@ primary_region = 'dfw'
   min_machines_running = 0
   processes = ['app']
 
+  [[http_service.checks]]
+    grace_period = '30s'
+    interval = '15s'
+    method = 'GET'
+    path = '/docs'
+    timeout = '5s'
+
 [[vm]]
-  memory = '1gb'
+  memory = '2gb'
   cpu_kind = 'shared'
   cpus = 1
-  memory_mb = 2048
