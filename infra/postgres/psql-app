@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec psql -v ON_ERROR_STOP=1 -U physician_app -d physician_assistant "$@"
