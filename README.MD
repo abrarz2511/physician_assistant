@@ -174,6 +174,23 @@ The embedding and retrieval modules also load Qdrant credentials from a local
 .\venv\Scripts\python.exe -m uvicorn main:app --reload
 ```
 
+### Start the Fly stack
+
+Start the FastAPI, PostgreSQL, and Redis Fly Machines concurrently, then follow
+all three prefixed log streams in the same terminal:
+
+```powershell
+.\scripts\start-fly-stack.ps1
+```
+
+Press `Ctrl+C` to stop following logs. This does not stop the Fly Machines.
+
+Stop every running Machine across the same three Fly apps:
+
+```powershell
+.\scripts\start-fly-stack.ps1 --stop
+```
+
 Connect to:
 
 ```text

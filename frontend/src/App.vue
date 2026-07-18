@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 
-const apiBase = import.meta.env.VITE_API_BASE || "/api";
-const wsBase = import.meta.env.VITE_WS_BASE || `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+const flyApiOrigin = "https://physician-assistant-srck5q.fly.dev";
+const flyWsBase = "wss://physician-assistant-srck5q.fly.dev/ws";
+const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "/api" : flyApiOrigin);
+const wsBase = import.meta.env.VITE_WS_BASE || (import.meta.env.DEV ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws` : flyWsBase);
 
 const status = reactive({
   api: "Checking",
