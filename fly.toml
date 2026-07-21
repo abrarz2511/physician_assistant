@@ -1,16 +1,13 @@
-# fly.toml app configuration file generated for physician-assistant-srck5q on 2026-07-15T06:08:29Z
+# fly.toml app configuration file for physician-assistant-new
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'physician-assistant-srck5q'
+app = 'physician-assistant-new'
 primary_region = 'iad'
 
 [build]
   dockerfile = "Dockerfile"
-
-[deploy]
-  release_command = "/app/.venv/bin/alembic upgrade head"
 
 [http_service]
   internal_port = 8080

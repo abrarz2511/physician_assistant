@@ -144,38 +144,58 @@ ws://127.0.0.1:8000/ws/audio/{session_id}
 
 ## Fly.io deployment
 
-The production API runs in `iad` with PostgreSQL and Redis as separate,
-private Fly apps. Their configuration lives under `infra/postgres` and
-`infra/redis`. Neither data service should have a public IP address.
+The production API is `physician-assistant-new` in `iad`. Its data services are
+managed resources in the personal Fly organization:
 
-Provisioning requires three generated secrets: `POSTGRES_PASSWORD` on the
-Postgres app, `REDIS_PASSWORD` on the Redis app, and URL-encoded connection
-strings stored as `DATABASE_URL` and `REDIS_URL` on the API app. Never put
-those values in a tracked file or command transcript.
+- `physician-assistant-new-db`: Fly Managed Postgres 17, Basic plan, 10 GB,
+  `iad`. The application database is `physician_assistant`, and the application
+  connects as the `physician-app` writer through the pooled PgBouncer URL in
+  the `DATABASE_URL` Fly secret.
+- `physician-assistant-new-cache`: the managed Upstash Redis target,
+  pay-as-you-go, eviction enabled, primary region `iad`, and no additional read
+  regions. Provisioning is pending until billing is enabled for the personal
+  Fly organization; until then, the staged `REDIS_URL` is still the obsolete
+  value and must not be used for a production deployment.
 
-Create one encrypted 1 GB volume in `iad` for each service, with scheduled
-snapshots enabled, before its first deployment. PostgreSQL 18 mounts its volume
-at `/var/lib/postgresql`; Redis mounts its volume at `/data`. The API's Fly
-release command runs `alembic upgrade head` once per deploy and stops the
-release if a migration fails.
+To start every machine in the application:
 
-The service addresses on Fly's private Flycast network are:
-
-```text
-physician-assistant-srck5q-db.flycast:5432
-physician-assistant-srck5q-cache.flycast:6379
+```powershell
+python .\scripts\manage_fly_machines.py
 ```
 
-For a local-to-Fly database migration, first verify that `.env` contains a
-working local `DATABASE_URL`. Create a PostgreSQL custom-format dump under the
-ignored `.fly-migration/` directory with `--no-owner --no-acl`, proxy port 5432
-from the private Postgres app to a temporary local port, restore the dump, run
-`ANALYZE`, and compare the Alembic revision and per-table row counts before
-switching the API secret. Delete the temporary dump after verification.
+Use `-Stop` to stop every running machine instead:
 
-These are intentionally low-cost, single-node services. Fly does not manage
-their upgrades, failover, backups, or disaster recovery. Practice restoring a
-volume snapshot before relying on the database for clinical records.
+```powershell
+python .\scripts\manage_fly_machines.py --stop
+```
+
+Additional Fly apps that provide machine-based services can be included with
+`-ServiceApp`, for example:
+
+```powershell
+python .\scripts\manage_fly_machines.py --service-app service-app-1 --service-app service-app-2
+```
+
+The Managed Postgres and Upstash Redis resources above are not Fly Machines, so
+the script does not attempt to stop or start them.
+
+At current Fly pricing, the Postgres resource is approximately $40.80/month:
+$38 for Basic plus $2.80 for 10 GB of storage. Upstash pay-as-you-go usage is
+billed separately. Do not put either connection string in a tracked file or
+command transcript.
+
+The production schema was initialized once with `Base.metadata.create_all`
+through a direct Managed Postgres proxy. It intentionally starts with only the
+empty `encounters`, `soap_notes`, and `coding_recommendations` application
+tables; there is no `alembic_version` table and no Fly release command that
+runs Alembic. Future schema changes require an explicit migration plan before
+deployment.
+
+The runtime `DATABASE_URL` must remain the pooled PgBouncer URL. Direct
+connections are reserved for schema administration and other session-scoped
+operations. SQLAlchemy validates connections before checkout, recycles them
+after 600 seconds, and waits up to 30 seconds for an available connection, in
+line with Fly's Managed Postgres client guidance.
 
 The client sends binary WebM audio chunks and finishes the stream by sending
 the text message `stop`. Server messages use these types:

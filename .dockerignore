@@ -1,12 +1,25 @@
 fly.toml
 .git/
 __pycache__/
+.env
 .envrc
 venv/
 venv/**
 .pytest_cache/
 .fly-migration/
-frontend/node_modules/
-frontend/*.log
+# Development, test, documentation, and data-ingestion assets are not needed
+# by the deployed API.  Runtime RAG indices under chunks/ are intentionally
+# retained because the API reads them for code recommendations.
+.agents/
+CODEX.MD
+README.MD
+docker-compose.yml
+alembic.ini
+alembic/
+frontend/
+infra/
+rag_ingestion/
+scripts/
+tests/
 ICD-10/
 Doc compliance/
