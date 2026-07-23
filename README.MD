@@ -14,6 +14,46 @@ Physician's have to go through the tedious task of reporting ICD-10-CM codes for
 
 This Physician's assistant was built with a focus on automating these tedious tasks. It listens to the voice notes from the Doctor, transcribes it, generates summary notes in the SOAP format and recommends ICD-10-CM code candidates and specificity requirements and CMS E/M service documentation gaps, service levels and billing codes. It also provides a place where the physician can store his notes.
 
+## Application workflow
+
+The application follows this encounter-to-coding workflow:
+
+1. **Start an encounter** – The client opens a WebSocket connection to
+   `ws://127.0.0.1:8000/ws/audio/{session_id}`. The API creates an encounter in
+   PostgreSQL and marks it as `streaming`.
+2. **Stream the voice note** – The client sends binary audio chunks over the
+   WebSocket. The server accumulates the audio in a temporary file and returns
+   transcription status and incremental transcript updates.
+3. **Finalize the transcript** – When the client sends the stop message, the
+   server completes transcription, removes the temporary audio file, saves the
+   final transcript, and marks the encounter as completed.
+4. **Generate the SOAP note** – The client calls `POST /note` with the encounter
+   ID. The LLM converts the final transcript into a validated JSON SOAP note
+   containing Subjective, Objective, Assessment, Plan, and diagnosis queries.
+5. **Review the documentation** – The physician reviews the transcript and SOAP
+   note and can retrieve them with `GET /encounters/{encounter_id}`. The note is
+   an assistive draft and should be corrected before coding or clinical use.
+6. **Retrieve coding evidence** – The coding workflow searches the local BM25
+   indexes and Qdrant vector collection for relevant ICD-10-CM and CMS source
+   passages. ICD candidates are checked against the Alphabetic Index and Tabular
+   List, while CMS E/M evidence is matched to the encounter context.
+7. **Generate recommendations** – The client calls `POST /recommend`. The model
+   receives the SOAP note, encounter context, and compact retrieved evidence,
+   then proposes ICD-10-CM and CMS E/M coding recommendations.
+8. **Validate and store results** – The service rejects unsupported ICD codes or
+   unknown evidence references and applies deterministic CMS checks for service
+   family, time or MDM, modifiers, G2211, and prolonged services. The validated
+   recommendation is stored with the encounter.
+9. **Review and retrieve the completed encounter** – The client can list saved
+   encounters with `GET /encounters` and retrieve the transcript, SOAP note, and
+   coding recommendation together with `GET /encounters/{encounter_id}`.
+
+The supporting knowledge-base workflow is: parse the FY2027 ICD-10-CM and CMS
+source files, create deterministic chunks, build BM25 indexes, embed and upload
+the chunks to Qdrant, and use hybrid retrieval during coding. All generated
+notes and coding recommendations require review by a qualified clinician or
+coder.
+
 
 ## Project layout
 
@@ -142,76 +182,6 @@ Connect to:
 ws://127.0.0.1:8000/ws/audio/{session_id}
 ```
 
-## Fly.io deployment
-
-The production API is `physician-assistant-new` in `iad`. Its data services are
-managed resources in the personal Fly organization:
-
-- `physician-assistant-new-db`: Fly Managed Postgres 17, Basic plan, 10 GB,
-  `iad`. The application database is `physician_assistant`, and the application
-  connects as the `physician-app` writer through the pooled PgBouncer URL in
-  the `DATABASE_URL` Fly secret.
-- `physician-assistant-new-cache`: the managed Upstash Redis target,
-  pay-as-you-go, eviction enabled, primary region `iad`, and no additional read
-  regions. Provisioning is pending until billing is enabled for the personal
-  Fly organization; until then, the staged `REDIS_URL` is still the obsolete
-  value and must not be used for a production deployment.
-
-To start every machine in the application:
-
-```powershell
-python .\scripts\manage_fly_machines.py
-```
-
-Use `-Stop` to stop every running machine instead:
-
-```powershell
-python .\scripts\manage_fly_machines.py --stop
-```
-
-Additional Fly apps that provide machine-based services can be included with
-`-ServiceApp`, for example:
-
-```powershell
-python .\scripts\manage_fly_machines.py --service-app service-app-1 --service-app service-app-2
-```
-
-The Managed Postgres and Upstash Redis resources above are not Fly Machines, so
-the script does not attempt to stop or start them.
-
-At current Fly pricing, the Postgres resource is approximately $40.80/month:
-$38 for Basic plus $2.80 for 10 GB of storage. Upstash pay-as-you-go usage is
-billed separately. Do not put either connection string in a tracked file or
-command transcript.
-
-The production schema was initialized once with `Base.metadata.create_all`
-through a direct Managed Postgres proxy. It intentionally starts with only the
-empty `encounters`, `soap_notes`, and `coding_recommendations` application
-tables; there is no `alembic_version` table and no Fly release command that
-runs Alembic. Future schema changes require an explicit migration plan before
-deployment.
-
-The runtime `DATABASE_URL` must remain the pooled PgBouncer URL. Direct
-connections are reserved for schema administration and other session-scoped
-operations. SQLAlchemy validates connections before checkout, recycles them
-after 600 seconds, and waits up to 30 seconds for an available connection, in
-line with Fly's Managed Postgres client guidance.
-
-The client sends binary WebM audio chunks and finishes the stream by sending
-the text message `stop`. Server messages use these types:
-
-- `connection.accepted`
-- `audio.chunk.received`
-- `transcript.update`
-- `transcript.error`
-- `stream.stopped`
-- `stream.error`
-- `transcript.final`
-
-The server retranscribes the accumulated temporary audio after every received
-chunk. `connection.accepted` returns a server-generated `encounter_id`. On stop
-or disconnect, the server removes temporary audio and stores the final transcript
-in PostgreSQL.
 
 ## Observability
 
@@ -349,11 +319,3 @@ contains `recommendation`, `cms_validation`, and the full `retrieval` payload.
 For detailed retrieval flow diagrams, see
 [`retrieval/RETRIEVE.MD`](retrieval/RETRIEVE.MD).
 
-## Known limitations
-
-- Audio is retranscribed in full for every chunk, so cost and latency increase
-  with recording length.
-- Only the bundled FY2027 ICD-10-CM date range is accepted.
-- Hybrid retrieval requires both local generated indexes and the corresponding
-  embeddings in Qdrant.
-- No automated test suite is currently tracked in this repository.
