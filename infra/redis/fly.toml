@@ -1,0 +1,31 @@
+app = 'physician-assistant-srck5q-cache'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[[services]]
+  auto_start_machines = true
+  auto_stop_machines = false
+  internal_port = 6379
+  min_machines_running = 1
+  protocol = 'tcp'
+
+  [[services.ports]]
+    port = 6379
+
+[checks.redis]
+  grace_period = '15s'
+  interval = '15s'
+  port = 6379
+  timeout = '5s'
+  type = 'tcp'
+
+[[mounts]]
+  destination = '/data'
+  source = 'redis_data'
+
+[[vm]]
+  cpu_kind = 'shared'
+  cpus = 1
+  memory = '256mb'

@@ -197,6 +197,61 @@ Connect to:
 ws://127.0.0.1:8000/ws/audio/{session_id}
 ```
 
+## Fly.io deployment
+
+The production API is `physician-assistant-new` in `iad`. Its data services are
+managed resources in the personal Fly organization:
+
+- `physician-assistant-new-db`: Fly Managed Postgres 17, Basic plan, 10 GB,
+  `iad`. The application database is `physician_assistant`, and the application
+  connects as the `physician-app` writer through the pooled PgBouncer URL in
+  the `DATABASE_URL` Fly secret.
+- `physician-assistant-new-cache`: the managed Upstash Redis target,
+  pay-as-you-go, eviction enabled, primary region `iad`, and no additional read
+  regions. Provisioning is pending until billing is enabled for the personal
+  Fly organization; until then, the staged `REDIS_URL` is still the obsolete
+  value and must not be used for a production deployment.
+
+To start every machine in the application:
+
+```powershell
+python .\scripts\manage_fly_machines.py
+```
+
+Use `-Stop` to stop every running machine instead:
+
+```powershell
+python .\scripts\manage_fly_machines.py --stop
+```
+
+Additional Fly apps that provide machine-based services can be included with
+`-ServiceApp`, for example:
+
+```powershell
+python .\scripts\manage_fly_machines.py --service-app service-app-1 --service-app service-app-2
+```
+
+The Managed Postgres and Upstash Redis resources above are not Fly Machines, so
+the script does not attempt to stop or start them.
+
+At current Fly pricing, the Postgres resource is approximately $40.80/month:
+$38 for Basic plus $2.80 for 10 GB of storage. Upstash pay-as-you-go usage is
+billed separately. Do not put either connection string in a tracked file or
+command transcript.
+
+The production schema was initialized once with `Base.metadata.create_all`
+through a direct Managed Postgres proxy. It intentionally starts with only the
+empty `encounters`, `soap_notes`, and `coding_recommendations` application
+tables; there is no `alembic_version` table and no Fly release command that
+runs Alembic. Future schema changes require an explicit migration plan before
+deployment.
+
+The runtime `DATABASE_URL` must remain the pooled PgBouncer URL. Direct
+connections are reserved for schema administration and other session-scoped
+operations. SQLAlchemy validates connections before checkout, recycles them
+after 600 seconds, and waits up to 30 seconds for an available connection, in
+line with Fly's Managed Postgres client guidance.
+
 The client sends binary WebM audio chunks and finishes the stream by sending
 the text message `stop`. Server messages use these types:
 

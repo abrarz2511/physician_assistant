@@ -1,0 +1,35 @@
+app = 'physician-assistant-srck5q-db'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[env]
+  POSTGRES_DB = 'physician_assistant'
+  POSTGRES_USER = 'physician_app'
+
+[[services]]
+  auto_start_machines = true
+  auto_stop_machines = false
+  internal_port = 5432
+  min_machines_running = 1
+  protocol = 'tcp'
+
+  [[services.ports]]
+    port = 5432
+
+[checks.postgres]
+  grace_period = '30s'
+  interval = '15s'
+  port = 5432
+  timeout = '5s'
+  type = 'tcp'
+
+[[mounts]]
+  destination = '/var/lib/postgresql'
+  source = 'postgres_data'
+
+[[vm]]
+  cpu_kind = 'shared'
+  cpus = 1
+  memory = '512mb'

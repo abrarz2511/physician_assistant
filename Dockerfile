@@ -1,19 +1,15 @@
-FROM python:3.12-slim
+FROM python:3.12.13 AS builder
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential \
-    && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+RUN python -m venv .venv
+COPY requirements.txt ./
+RUN .venv/bin/pip install -r requirements.txt
+FROM python:3.12.13-slim
+WORKDIR /app
+COPY --from=builder /app/.venv .venv/
 COPY . .
-
-EXPOSE 8000
-
-CMD ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"]
+CMD ["/app/.venv/bin/fastapi", "run",  "--host", "0.0.0.0", "--port", "8080"]
