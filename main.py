@@ -104,27 +104,41 @@ async def recommend_codes(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except TypeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid data supplied to the coding recommendation service: {exc}",
+        ) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Required coding reference data is unavailable.",
+        ) from exc
+    except (ConnectionError, TimeoutError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="A coding recommendation dependency could not be reached.",
+        ) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The coding recommendation service could not access a required resource.",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The coding recommendation service is not configured correctly: {exc}",
+        ) from exc
+    except (AttributeError, KeyError, IndexError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="A coding recommendation dependency returned an unexpected response.",
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=502,
             detail="The coding recommendation service is unavailable.",
         ) from exc
-
-    try:
-        await upsert_coding_recommendation(
-            session,
-            encounter,
-            setting=request.setting,
-            patient_type=request.patient_type,
-            service_date=request.service_date,
-            documentation_facts=request.documentation_facts,
-            payload=result,
-        )
-    except SQLAlchemyError as exc:
-        await session.rollback()
-        raise _database_unavailable() from exc
-    return result
-
 
 @app.get("/encounters")
 async def read_encounters(
